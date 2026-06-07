@@ -6,9 +6,9 @@ export const revalidate = 0;
 
 type Range = 'day' | 'month' | 'year' | 'all';
 
-function yesterdayStr() { return new Date(Date.now() - 86_400_000).toISOString().slice(0, 10); }
+function todayStr()        { return new Date().toISOString().slice(0, 10); }
 function currentMonthStr() { return new Date().toISOString().slice(0, 7); }
-function currentYearStr() { return String(new Date().getFullYear()); }
+function currentYearStr()  { return String(new Date().getFullYear()); }
 
 /** Zero-fill every day of the month up to today so the chart always shows a full month grid. */
 function padMonthDays(
@@ -16,7 +16,7 @@ function padMonthDays(
   year: number,
   month: number,   // 1-based
 ): { date: string; pv_yield_kwh: number }[] {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayStr();
   const daysInMonth = new Date(year, month, 0).getDate();
   const map = new Map(data.map(r => [r.date, r.pv_yield_kwh]));
   const out: { date: string; pv_yield_kwh: number }[] = [];
@@ -51,7 +51,8 @@ export async function GET(
   const { id } = await params;
   const url     = new URL(req.url);
   const range   = (url.searchParams.get('range') ?? 'day') as Range;
-  const dateParam  = url.searchParams.get('date')  ?? yesterdayStr();
+  // Fix: default to today, not yesterday
+  const dateParam  = url.searchParams.get('date')  ?? todayStr();
   const monthParam = url.searchParams.get('month') ?? currentMonthStr();
   const yearParam  = url.searchParams.get('year')  ?? currentYearStr();
   const db = getDashboardClient();
@@ -66,6 +67,7 @@ export async function GET(
   let readings: unknown[] = [];
   let granularity: '5min' | 'hour' | 'day' | 'month' = '5min';
   let hourlyUnavailable = false;
+  let sparseDay = false;
   const source = stationRes.data.source;
 
   if (range === 'day') {
@@ -80,8 +82,12 @@ export async function GET(
         .gte('recorded_at', dayStart)
         .lte('recorded_at', dayEnd)
         .order('recorded_at');
-      readings = data ?? [];
+      const rawReadings = data ?? [];
+      readings = rawReadings;
       granularity = '5min';
+      // Sparse: historical day with < 24 readings (< 2 hours of data)
+      const isToday = dateParam === todayStr();
+      sparseDay = !isToday && rawReadings.length > 0 && rawReadings.length < 24;
     } else {
       // FusionSolar: hourly data only retained for ~7 days by the API
       const sevenDaysAgo = new Date(Date.now() - 7 * 86_400_000);
@@ -162,6 +168,7 @@ export async function GET(
     range,
     granularity,
     hourlyUnavailable,
+    sparseDay,
     selectedDate:  dateParam,
     selectedMonth: monthParam,
     selectedYear:  parseInt(yearParam),

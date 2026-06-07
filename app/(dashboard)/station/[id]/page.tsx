@@ -24,14 +24,26 @@ const TABS: { key: Range; label: string }[] = [
 const MIN_DATE = '2026-03-01';
 const MIN_YEAR = 2026;
 
-function todayStr()     { return new Date().toISOString().slice(0, 10); }
-function yesterdayStr() { return new Date(Date.now() - 86_400_000).toISOString().slice(0, 10); }
-function curMonthStr()  { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; }
-function curYear()      { return new Date().getFullYear(); }
+function todayStr()    { return new Date().toISOString().slice(0, 10); }
+function curMonthStr() { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; }
+function curYear()     { return new Date().getFullYear(); }
 
 function fmtMonthLabel(yyyymm: string) {
   const [y, m] = yyyymm.split('-');
   return new Date(+y, +m - 1, 1).toLocaleDateString([], { month: 'long', year: 'numeric' });
+}
+
+/** All months from the project start (March 2026) up to the current month. */
+function getMonthOptions(): string[] {
+  const opts: string[] = [];
+  const now = new Date();
+  let y = 2026, m = 3;
+  while (y < now.getFullYear() || (y === now.getFullYear() && m <= now.getMonth() + 1)) {
+    opts.push(`${y}-${String(m).padStart(2, '0')}`);
+    m++;
+    if (m > 12) { m = 1; y++; }
+  }
+  return opts;
 }
 
 function DataBadge({ granularity, source }: { granularity: string; source: string }) {
@@ -89,6 +101,7 @@ interface StationData {
   selectedDate: string;
   selectedMonth: string;
   selectedYear: number;
+  sparseDay?: boolean;
 }
 
 // ── nav button shared style ───────────────────────────────────────────────────
@@ -110,7 +123,7 @@ export default function StationDetailPage() {
 
   // Initialise from URL so the page is bookmarkable
   const initRange  = (searchParams.get('range') as Range) ?? 'day';
-  const initDate   = searchParams.get('date')  ?? yesterdayStr();
+  const initDate   = searchParams.get('date')  ?? todayStr();
   const initMonth  = searchParams.get('month') ?? curMonthStr();
   const initYear   = +(searchParams.get('year') ?? curYear());
 
@@ -167,9 +180,16 @@ export default function StationDetailPage() {
 
   // ── navigation handlers ───────────────────────────────────────────────────
   function changeRange(r: Range) {
+    // Always reset to the current period when switching tabs so users see fresh data
+    const newDate  = r === 'day'   ? todayStr()    : selectedDate;
+    const newMonth = r === 'month' ? curMonthStr() : selectedMonth;
+    const newYear  = r === 'year'  ? curYear()     : selectedYear;
     setRange(r);
-    router.replace(pageUrl(r, selectedDate, selectedMonth, selectedYear), { scroll: false });
-    fetchData(r, selectedDate, selectedMonth, selectedYear);
+    setSelectedDate(newDate);
+    setSelectedMonth(newMonth);
+    setSelectedYear(newYear);
+    router.replace(pageUrl(r, newDate, newMonth, newYear), { scroll: false });
+    fetchData(r, newDate, newMonth, newYear);
   }
 
   function handleDateChange(newDate: string) {
@@ -354,6 +374,15 @@ export default function StationDetailPage() {
               <button style={navBtn(selectedDate >= todayStr())} onClick={() => stepDay(1)} disabled={selectedDate >= todayStr()}>
                 <ChevronRight size={14} />
               </button>
+              {selectedDate !== todayStr() && (
+                <button
+                  onClick={() => handleDateChange(todayStr())}
+                  className="text-xs font-semibold px-3 py-1.5 rounded-lg cursor-pointer"
+                  style={{ background: 'var(--accent)', color: '#fff', border: 'none', lineHeight: 1 }}
+                >
+                  Today
+                </button>
+              )}
             </div>
           )}
 
@@ -362,9 +391,24 @@ export default function StationDetailPage() {
               <button style={navBtn(selectedMonth <= '2026-03')} onClick={() => stepMonth(-1)} disabled={selectedMonth <= '2026-03'}>
                 <ChevronLeft size={14} />
               </button>
-              <span className="text-sm font-medium w-40 text-center select-none" style={{ color: 'var(--text-primary)' }}>
-                {fmtMonthLabel(selectedMonth)}
-              </span>
+              <select
+                value={selectedMonth}
+                onChange={e => {
+                  const nm = e.target.value;
+                  setSelectedMonth(nm);
+                  router.replace(pageUrl('month', selectedDate, nm, selectedYear), { scroll: false });
+                  fetchData('month', selectedDate, nm, selectedYear);
+                }}
+                className="text-xs font-medium px-3 py-1.5 rounded-lg cursor-pointer"
+                style={{
+                  background: 'var(--card)', border: '1px solid var(--border)',
+                  color: 'var(--text-primary)', outline: 'none',
+                }}
+              >
+                {getMonthOptions().map(mo => (
+                  <option key={mo} value={mo}>{fmtMonthLabel(mo)}</option>
+                ))}
+              </select>
               <button style={navBtn(selectedMonth >= curMonthStr())} onClick={() => stepMonth(1)} disabled={selectedMonth >= curMonthStr()}>
                 <ChevronRight size={14} />
               </button>
@@ -376,9 +420,24 @@ export default function StationDetailPage() {
               <button style={navBtn(selectedYear <= MIN_YEAR)} onClick={() => stepYear(-1)} disabled={selectedYear <= MIN_YEAR}>
                 <ChevronLeft size={14} />
               </button>
-              <span className="text-sm font-semibold w-16 text-center select-none" style={{ color: 'var(--text-primary)' }}>
-                {selectedYear}
-              </span>
+              <select
+                value={selectedYear}
+                onChange={e => {
+                  const ny = +e.target.value;
+                  setSelectedYear(ny);
+                  router.replace(pageUrl('year', selectedDate, selectedMonth, ny), { scroll: false });
+                  fetchData('year', selectedDate, selectedMonth, ny);
+                }}
+                className="text-xs font-medium px-3 py-1.5 rounded-lg cursor-pointer"
+                style={{
+                  background: 'var(--card)', border: '1px solid var(--border)',
+                  color: 'var(--text-primary)', outline: 'none',
+                }}
+              >
+                {Array.from({ length: curYear() - MIN_YEAR + 1 }, (_, i) => MIN_YEAR + i).map(y => (
+                  <option key={y} value={y}>{y}</option>
+                ))}
+              </select>
               <button style={navBtn(selectedYear >= curYear())} onClick={() => stepYear(1)} disabled={selectedYear >= curYear()}>
                 <ChevronRight size={14} />
               </button>
@@ -417,12 +476,27 @@ export default function StationDetailPage() {
               readings={(data?.readings ?? []) as unknown as Parameters<typeof PowerChart>[0]['readings']}
               range="day"
               granularity={data?.granularity === 'hour' ? 'hour' : '5min'}
+              date={selectedDate}
             />
           ) : (
             <YieldChart
               data={(data?.readings ?? []) as Record<string, unknown>[]}
               range={yieldRange}
             />
+          )}
+
+          {/* Sparse data notice — historical day with fewer than 24 readings */}
+          {!loading && data?.sparseDay && (
+            <div
+              className="mt-4 flex items-start gap-2 rounded-xl px-4 py-3 text-xs"
+              style={{ background: '#3B82F618', border: '1px solid #3B82F644', color: '#60A5FA' }}
+            >
+              <AlertCircle size={13} className="mt-0.5 shrink-0" />
+              <span>
+                Limited data for this date — the station recorded fewer than 24 readings.
+                This may be a partial day or the station was briefly offline.
+              </span>
+            </div>
           )}
         </div>
 
