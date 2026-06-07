@@ -32,6 +32,7 @@ export interface ReportAlarm {
 export interface DailyReportProps {
   date: string;
   generatedAt: string;
+  kwhLabel?: string;
   summary: {
     total: number;
     online: number;
@@ -67,7 +68,7 @@ function statusLabel(s: string) {
   return 'Offline';
 }
 
-export function DailyReport({ date, generatedAt, summary, stations, alarms }: DailyReportProps) {
+export function DailyReport({ date, generatedAt, kwhLabel = 'Today kWh', summary, stations, alarms }: DailyReportProps) {
   return (
     <Html lang="en">
       <Head />
@@ -177,7 +178,7 @@ export function DailyReport({ date, generatedAt, summary, stations, alarms }: Da
                     { label: 'Station', align: 'left' as const, pad: '8px 8px' },
                     { label: 'Status', align: 'center' as const, pad: '8px 6px' },
                     { label: 'Live kW', align: 'right' as const, pad: '8px 6px' },
-                    { label: 'Today kWh', align: 'right' as const, pad: '8px 8px' },
+                    { label: kwhLabel, align: 'right' as const, pad: '8px 8px' },
                   ].map((col) => (
                     <th
                       key={col.label}
