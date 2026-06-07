@@ -71,8 +71,8 @@ Deno.serve(async (_req: Request) => {
   }
 
   // ── LIVOLTEK intraday self-heal (operator token, full day upsert) ────────────
-  // Fetches today's full 5-min intraday data for every LIVOLTEK station on each
-  // hourly run. Any readings missed by cron-live are automatically backfilled.
+  // Heals today AND yesterday on every hourly run so any readings missed by
+  // cron-live (gaps, cold starts, overnight downtime) are automatically filled.
   let intradayResult = { ok: 0, errors: 0, points: 0 };
   try {
     const { email, password } = loadLivoltkEnv();
@@ -82,19 +82,28 @@ Deno.serve(async (_req: Request) => {
 
     const idMap = await getStationIdMap('livoltek');
 
-    for (const siteId of ALL_SITE_IDS) {
-      const stationId = idMap.get(String(siteId));
-      if (!stationId) continue;
-      try {
-        const data   = await getLivoltkSiteIntraday(opClient, siteId);
-        const points = await upsertLivoltkIntradayReadings(stationId, data);
-        intradayResult.ok++;
-        intradayResult.points += points;
-      } catch (err) {
-        console.error(`Intraday failed siteId=${siteId}:`, err instanceof Error ? err.message : String(err));
-        intradayResult.errors++;
+    // Heal today + yesterday (Johannesburg local dates, UTC+2)
+    const joburgNow = new Date(Date.now() + 2 * 60 * 60 * 1000);
+    const healDates = [
+      joburgNow.toISOString().slice(0, 10),
+      new Date(joburgNow.getTime() - 86_400_000).toISOString().slice(0, 10),
+    ];
+
+    for (const healDate of healDates) {
+      for (const siteId of ALL_SITE_IDS) {
+        const stationId = idMap.get(String(siteId));
+        if (!stationId) continue;
+        try {
+          const data   = await getLivoltkSiteIntraday(opClient, siteId, healDate);
+          const points = await upsertLivoltkIntradayReadings(stationId, data);
+          intradayResult.ok++;
+          intradayResult.points += points;
+        } catch (err) {
+          console.error(`Intraday failed siteId=${siteId} date=${healDate}:`, err instanceof Error ? err.message : String(err));
+          intradayResult.errors++;
+        }
+        await sleep(250); // 250ms — portal rate limit is lenient for historical queries
       }
-      await sleep(500); // portal rate limit is lenient — 500ms is enough
     }
 
     await logRefresh({

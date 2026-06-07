@@ -374,13 +374,25 @@ export default function StationDetailPage() {
               <button style={navBtn(selectedDate >= todayStr())} onClick={() => stepDay(1)} disabled={selectedDate >= todayStr()}>
                 <ChevronRight size={14} />
               </button>
-              {selectedDate !== todayStr() && (
-                <button
-                  onClick={() => handleDateChange(todayStr())}
-                  className="text-xs font-semibold px-3 py-1.5 rounded-lg cursor-pointer"
-                  style={{ background: 'var(--accent)', color: '#fff', border: 'none', lineHeight: 1 }}
+              {selectedDate === todayStr() ? (
+                <span
+                  className="text-xs font-semibold px-3 py-1.5 rounded-lg"
+                  style={{ background: 'var(--accent)', color: '#fff' }}
                 >
                   Today
+                </span>
+              ) : (
+                <button
+                  onClick={() => handleDateChange(todayStr())}
+                  className="text-xs font-medium px-3 py-1.5 rounded-lg cursor-pointer"
+                  style={{
+                    background: 'transparent',
+                    color: 'var(--text-secondary)',
+                    border: '1px solid var(--border)',
+                    lineHeight: 1,
+                  }}
+                >
+                  Go to today
                 </button>
               )}
             </div>
