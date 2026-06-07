@@ -7,12 +7,14 @@ import {
   Bell,
   BarChart3,
   Zap,
+  Mail,
 } from 'lucide-react';
 
 const nav = [
   { href: '/', label: 'Fleet Overview', icon: LayoutDashboard },
   { href: '/alarms', label: 'Alarms & Alerts', icon: Bell },
   { href: '/analytics', label: 'Analytics', icon: BarChart3 },
+  { href: '/reports', label: 'Reports', icon: Mail },
 ];
 
 export function Sidebar() {
