@@ -15,8 +15,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Use public DNS (GitHub's default DNS blocks *.huawei.com)
-        run: echo "nameserver 8.8.8.8" | sudo tee /etc/resolv.conf
+      - name: Add Huawei host entry (GitHub DNS blocks *.huawei.com; IP resolves via 8.8.8.8)
+        run: echo "119.8.160.213 intl.fusionsolar.huawei.com" | sudo tee -a /etc/hosts
       - run: npm ci
       - name: Fetch batch 1
         env:
