@@ -11,6 +11,8 @@ import {
   LivoltkClient, loadLivoltkEnv, getAllSitesLive,
   upsertFusionSolarKpiDay, upsertFusionSolarHourlyReadings,
   upsertLivoltkKpiDay, logRefresh,
+  ALL_SITE_IDS, getStationIdMap,
+  getLivoltkSiteIntraday, upsertLivoltkIntradayReadings,
 } from './_shared/index.ts';
 
 Deno.serve(async (_req: Request) => {
@@ -68,7 +70,49 @@ Deno.serve(async (_req: Request) => {
     await logRefresh({ source: 'livoltek', jobType: 'daily', stationsOk: 0, stationsError: 16, errorDetail: detail, startedAt });
   }
 
-  return new Response(JSON.stringify({ ok: true, fusionsolar: fsResult, livoltek: lvResult }), {
+  // ── LIVOLTEK intraday self-heal (operator token, full day upsert) ────────────
+  // Fetches today's full 5-min intraday data for every LIVOLTEK station on each
+  // hourly run. Any readings missed by cron-live are automatically backfilled.
+  let intradayResult = { ok: 0, errors: 0, points: 0 };
+  try {
+    const { email, password } = loadLivoltkEnv();
+    const opClient = new LivoltkClient(email, password, 'operator');
+    const loginOk  = await opClient.login();
+    if (!loginOk) throw new Error('LIVOLTEK operator login failed');
+
+    const idMap = await getStationIdMap('livoltek');
+
+    for (const siteId of ALL_SITE_IDS) {
+      const stationId = idMap.get(String(siteId));
+      if (!stationId) continue;
+      try {
+        const data   = await getLivoltkSiteIntraday(opClient, siteId);
+        const points = await upsertLivoltkIntradayReadings(stationId, data);
+        intradayResult.ok++;
+        intradayResult.points += points;
+      } catch (err) {
+        console.error(`Intraday failed siteId=${siteId}:`, err instanceof Error ? err.message : String(err));
+        intradayResult.errors++;
+      }
+      await sleep(500); // portal rate limit is lenient — 500ms is enough
+    }
+
+    await logRefresh({
+      source: 'livoltek', jobType: 'intraday',
+      stationsOk: intradayResult.ok, stationsError: intradayResult.errors,
+      startedAt,
+    });
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    console.error('LIVOLTEK intraday job failed:', detail);
+    await logRefresh({
+      source: 'livoltek', jobType: 'intraday',
+      stationsOk: 0, stationsError: ALL_SITE_IDS.length,
+      errorDetail: detail, startedAt,
+    });
+  }
+
+  return new Response(JSON.stringify({ ok: true, fusionsolar: fsResult, livoltek: lvResult, livoltek_intraday: intradayResult }), {
     headers: { 'Content-Type': 'application/json' },
   });
 });

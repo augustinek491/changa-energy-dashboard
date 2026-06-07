@@ -1065,3 +1065,80 @@ export async function getLvAlarms(
   });
   return (resp.data as LvAlarm[]) ?? [];
 }
+
+// ─── LIVOLTEK intraday 5-min self-heal ────────────────────────────────────────
+
+const INTRADAY_KEYS = [
+  'Battery power', 'PV Power', 'Load Power', 'SM_Activepower', 'Battery SOC',
+];
+
+type IntradayPoint  = { value: number | null; datetime: string };
+type IntradayResult = Record<string, IntradayPoint[]>;
+
+/**
+ * Fetch a full day's 5-min intraday data for one LIVOLTEK site via sampleByKeyCommon.
+ * Requires operator token. Date defaults to today in Africa/Johannesburg (UTC+2).
+ *
+ * Critical: timeType MUST be 0. The portal returns timestamps in Africa/Kampala (UTC+3).
+ */
+export async function getLivoltkSiteIntraday(
+  client: LivoltkClient,
+  siteId: number,
+  date?: string,
+): Promise<IntradayResult> {
+  if (!date) {
+    // Use Johannesburg local date (UTC+2)
+    const joburg = new Date(Date.now() + 2 * 60 * 60 * 1000);
+    date = joburg.toISOString().slice(0, 10);
+  }
+  const resp = await client.postJson('/sample/sampleByKeyCommon', {
+    id:         siteId,
+    startTime:  `${date} 00:00:00`,
+    endTime:    `${date} 23:59:59`,
+    timeType:   0,       // MUST be 0 — 1 or 2 return operate.failure
+    objectType: 1,
+    keys:       [...INTRADAY_KEYS],
+  });
+  const result: IntradayResult = {};
+  const series = resp.data as Array<{ key?: string; value?: IntradayPoint[] }> | undefined;
+  for (const s of series ?? []) {
+    if (!s.key) continue;
+    result[s.key] = (s.value ?? []).filter(pt => pt.value != null);
+  }
+  return result;
+}
+
+/**
+ * Convert LIVOLTEK intraday data (portal timestamps in Africa/Kampala, UTC+3) to UTC
+ * and upsert all rows into station_readings. Returns number of rows written.
+ */
+export async function upsertLivoltkIntradayReadings(
+  stationId: string,
+  intradayData: IntradayResult,
+): Promise<number> {
+  const merged = new Map<string, Record<string, unknown>>();
+
+  const toUtc = (dt: string): string =>
+    new Date(dt.replace(' ', 'T') + '+03:00').toISOString();
+
+  for (const [key, points] of Object.entries(intradayData)) {
+    for (const pt of points) {
+      if (pt.value == null) continue;
+      const utc = toUtc(pt.datetime);
+      if (!merged.has(utc)) merged.set(utc, { station_id: stationId, recorded_at: utc });
+      const row = merged.get(utc)!;
+      switch (key) {
+        case 'PV Power':       row.pv_power_kw      = pt.value; break;
+        case 'Load Power':     row.load_power_kw    = pt.value; break;
+        case 'SM_Activepower': row.grid_power_kw    = pt.value; break;
+        case 'Battery power':  row.battery_power_kw = pt.value; break;
+        case 'Battery SOC':    row.battery_soc      = pt.value; break;
+      }
+    }
+  }
+
+  const rows = Array.from(merged.values());
+  if (rows.length === 0) return 0;
+  await insertReadings(rows);
+  return rows.length;
+}
