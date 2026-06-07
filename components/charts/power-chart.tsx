@@ -23,6 +23,7 @@ interface Reading {
 interface PowerChartProps {
   readings: Reading[];
   range: 'day' | 'week';
+  granularity?: '5min' | 'hour';
 }
 
 const SERIES = [
@@ -44,12 +45,14 @@ function hasData(readings: Reading[], key: string) {
   return readings.some(r => (r as unknown as Record<string, unknown>)[key] != null);
 }
 
-const TooltipContent = ({ active, payload, label }: {
+const TooltipContent = ({ active, payload, label, unit }: {
   active?: boolean;
   payload?: { name: string; value: number; color: string }[];
   label?: string;
+  unit?: string;
 }) => {
   if (!active || !payload?.length) return null;
+  const u = unit ?? 'kW';
   return (
     <div
       className="rounded-lg px-3 py-2.5 text-xs shadow-xl"
@@ -63,7 +66,7 @@ const TooltipContent = ({ active, payload, label }: {
             <span style={{ color: 'var(--text-secondary)' }}>{p.name}</span>
           </div>
           <span className="font-semibold" style={{ color: 'var(--text-primary)' }}>
-            {p.value != null ? `${p.value.toFixed(2)} kW` : '—'}
+            {p.value != null ? `${p.value.toFixed(2)} ${u}` : '—'}
           </span>
         </div>
       ))}
@@ -71,7 +74,7 @@ const TooltipContent = ({ active, payload, label }: {
   );
 };
 
-export function PowerChart({ readings, range }: PowerChartProps) {
+export function PowerChart({ readings, range, granularity = '5min' }: PowerChartProps) {
   if (!readings.length) {
     return (
       <div className="flex items-center justify-center h-64" style={{ color: 'var(--text-muted)' }}>
@@ -79,6 +82,8 @@ export function PowerChart({ readings, range }: PowerChartProps) {
       </div>
     );
   }
+
+  const unit = granularity === 'hour' ? 'kWh' : 'kW';
 
   const data = readings.map(r => ({
     t: formatTime(r.recorded_at, range),
@@ -92,50 +97,57 @@ export function PowerChart({ readings, range }: PowerChartProps) {
   const ticks = data.filter((_, i) => i % step === 0).map(d => d.t);
 
   return (
-    <ResponsiveContainer width="100%" height={300}>
-      <AreaChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
-        <defs>
-          {SERIES.map(s => (
-            <linearGradient key={s.key} id={`grad-${s.key}`} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%" stopColor={s.color} stopOpacity={0.2} />
-              <stop offset="95%" stopColor={s.color} stopOpacity={0} />
-            </linearGradient>
-          ))}
-        </defs>
-        <CartesianGrid strokeDasharray="3 3" vertical={false} />
-        <XAxis
-          dataKey="t"
-          ticks={ticks}
-          tick={{ fontSize: 11, fill: 'var(--text-muted)' }}
-          axisLine={false}
-          tickLine={false}
-        />
-        <YAxis
-          tick={{ fontSize: 11, fill: 'var(--text-muted)' }}
-          axisLine={false}
-          tickLine={false}
-          tickFormatter={v => `${v}kW`}
-          width={48}
-        />
-        <Tooltip content={<TooltipContent />} />
-        <Legend
-          wrapperStyle={{ fontSize: 12, paddingTop: 12, color: 'var(--text-secondary)' }}
-        />
-        {SERIES.filter(s => hasData(readings, s.key)).map(s => (
-          <Area
-            key={s.key}
-            type="monotone"
-            dataKey={s.key}
-            name={s.name}
-            stroke={s.color}
-            strokeWidth={2}
-            strokeDasharray={s.dashed ? '4 3' : undefined}
-            fill={`url(#grad-${s.key})`}
-            dot={false}
-            connectNulls
+    <div>
+      <ResponsiveContainer width="100%" height={300}>
+        <AreaChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+          <defs>
+            {SERIES.map(s => (
+              <linearGradient key={s.key} id={`grad-${s.key}`} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor={s.color} stopOpacity={0.2} />
+                <stop offset="95%" stopColor={s.color} stopOpacity={0} />
+              </linearGradient>
+            ))}
+          </defs>
+          <CartesianGrid strokeDasharray="3 3" vertical={false} />
+          <XAxis
+            dataKey="t"
+            ticks={ticks}
+            tick={{ fontSize: 11, fill: 'var(--text-muted)' }}
+            axisLine={false}
+            tickLine={false}
           />
-        ))}
-      </AreaChart>
-    </ResponsiveContainer>
+          <YAxis
+            tick={{ fontSize: 11, fill: 'var(--text-muted)' }}
+            axisLine={false}
+            tickLine={false}
+            tickFormatter={v => `${v}${unit}`}
+            width={52}
+          />
+          <Tooltip content={<TooltipContent unit={unit} />} />
+          <Legend
+            wrapperStyle={{ fontSize: 12, paddingTop: 12, color: 'var(--text-secondary)' }}
+          />
+          {SERIES.filter(s => hasData(readings, s.key)).map(s => (
+            <Area
+              key={s.key}
+              type="monotone"
+              dataKey={s.key}
+              name={s.name}
+              stroke={s.color}
+              strokeWidth={2}
+              strokeDasharray={s.dashed ? '4 3' : undefined}
+              fill={`url(#grad-${s.key})`}
+              dot={false}
+              connectNulls
+            />
+          ))}
+        </AreaChart>
+      </ResponsiveContainer>
+      {granularity === 'hour' && (
+        <p className="text-center mt-2 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+          PV generation only · Load, Grid &amp; Battery data unavailable for Huawei FusionSolar plants
+        </p>
+      )}
+    </div>
   );
 }

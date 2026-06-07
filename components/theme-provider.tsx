@@ -14,7 +14,8 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const stored = localStorage.getItem('changa-theme') as Theme | null;
-    const initial = stored ?? 'dark';
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const initial = stored ?? (prefersDark ? 'dark' : 'light');
     setTheme(initial);
     applyTheme(initial);
   }, []);

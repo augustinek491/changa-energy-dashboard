@@ -35,6 +35,7 @@ import type {
   SmartMeterKpi,
   BatteryKpi,
   StationKpiDayRecord,
+  StationKpiHourRecord,
   StationKpiMonthRecord,
   StationKpiYearRecord,
   FusionSolarAlarm,
@@ -313,6 +314,50 @@ export async function getStationKpiDay(
 }
 
 /**
+ * Hourly PV yield history for one or more stations — single API call.
+ *
+ * Undocumented Northbound endpoint discovered via live probe (June 2026).
+ * Returns 24 records per station for the calendar day containing `date`.
+ * The `collectTime` anchor must be a unix-ms timestamp (integer) — string
+ * dates return failCode=None (HTTP error). Same sliding-window rules as
+ * getKpiStationDay apply: anchor must be within ~90 days of today.
+ *
+ * inverterPower: kWh generated during that hour (null at night / missing).
+ *                Numerically equals average kW for that hour.
+ * radiationIntensity: kWh/m² solar irradiance (from EMI sensor if present).
+ */
+export async function getStationKpiHour(
+  client: FusionSolarClient,
+  stationCodes: string[],
+  date?: Date,
+): Promise<StationKpiHourRecord[]> {
+  const anchor = date ?? new Date(Date.now() - 86400000);
+  anchor.setHours(12, 0, 0, 0);
+
+  const res = await client.apiPost<Array<{
+    collectTime: number;
+    stationCode: string;
+    dataItemMap: Record<string, unknown>;
+  }>>(
+    'getKpiStationHour',
+    { stationCodes: stationCodes.join(','), collectTime: anchor.getTime() },
+  );
+
+  return (res.data ?? []).map(entry => {
+    const m = entry.dataItemMap ?? {};
+    const raw = m['inverter_power'];
+    const rad = m['radiation_intensity'];
+    return {
+      collectTime:       entry.collectTime,
+      hour:              new Date(entry.collectTime).toISOString(),
+      stationCode:       entry.stationCode,
+      inverterPower:     raw !== null && raw !== undefined ? Number(raw) : null,
+      radiationIntensity: rad !== null && rad !== undefined ? Number(rad) : null,
+    };
+  }).sort((a, b) => a.collectTime - b.collectTime);
+}
+
+/**
  * Monthly PV yield history for one or more stations — single API call.
  * Returns ~6 recent completed months per station.
  */
@@ -338,7 +383,7 @@ export async function getStationKpiMonth(
     const m = entry.dataItemMap ?? {};
     return {
       collectTime:        entry.collectTime,
-      yearMonth:          new Date(entry.collectTime).toISOString().slice(0, 7),
+      yearMonth:          new Date(entry.collectTime + 2 * 3_600_000).toISOString().slice(0, 7),
       stationCode:        entry.stationCode,
       pvYield:            Number(m['PVYield']              ?? 0),
       radiationIntensity: Number(m['radiation_intensity']  ?? 0),

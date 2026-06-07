@@ -104,6 +104,10 @@ html, body {
   border-radius: var(--radius-sm);
 }
 
+/* ── Date input: match browser native UI to current theme ── */
+input[type="date"] { color-scheme: light; }
+html.dark input[type="date"] { color-scheme: dark; }
+
 /* ── Recharts overrides ── */
 .recharts-tooltip-wrapper { z-index: 50; }
 .recharts-cartesian-grid-horizontal line,

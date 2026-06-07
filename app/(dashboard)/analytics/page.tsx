@@ -130,7 +130,7 @@ export default function AnalyticsPage() {
             <div className="h-[300px] rounded-lg animate-pulse" style={{ background: 'var(--card)' }} />
           ) : (
             <YieldChart
-              data={period === 'daily' ? (chartData as { date: string; total_kwh: number }[]) : (chartData as { year_month: string; total_kwh: number }[])}
+              data={(chartData ?? []) as Record<string, unknown>[]}
               range={period === 'daily' ? 'month' : 'year'}
             />
           )}

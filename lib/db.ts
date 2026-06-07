@@ -3,6 +3,7 @@ import type {
   StationDashboardRecord,
   SiteLive,
   StationKpiDayRecord,
+  StationKpiHourRecord,
   StationKpiMonthRecord,
   StationKpiYearRecord,
   FusionSolarAlarm,
@@ -198,6 +199,44 @@ export async function upsertFusionSolarKpiDay(
     .from('station_kpi_day')
     .upsert(rows, { onConflict: 'station_id,date' });
   if (error) throw new Error(`upsertFusionSolarKpiDay: ${error.message}`);
+}
+
+/**
+ * Write FusionSolar hourly readings into station_readings.
+ * Each record becomes one row keyed on (station_id, recorded_at) where
+ * recorded_at is the exact hour boundary from the API's collectTime.
+ * pv_power_kw stores kWh/hour ≈ average kW for that hour.
+ */
+export async function upsertFusionSolarHourlyReadings(
+  records: StationKpiHourRecord[],
+): Promise<{ written: number; skipped: number }> {
+  const supabase = getClient();
+  const idMap = await getStationIdMap('fusionsolar');
+
+  const rows = records
+    .map(r => {
+      const stationId = idMap.get(r.stationCode);
+      if (!stationId) return null;
+      return {
+        station_id:   stationId,
+        recorded_at:  r.hour,
+        pv_power_kw:  r.inverterPower,   // kWh/h ≈ avg kW; null at night
+        load_power_kw:    null,
+        grid_power_kw:    null,
+        battery_soc:      null,
+        battery_power_kw: null,
+      };
+    })
+    .filter((r): r is NonNullable<typeof r> => r !== null);
+
+  if (rows.length === 0) return { written: 0, skipped: records.length };
+
+  const { error } = await supabase
+    .from('station_readings')
+    .upsert(rows, { onConflict: 'station_id,recorded_at' });
+  if (error) throw new Error(`upsertFusionSolarHourlyReadings: ${error.message}`);
+
+  return { written: rows.length, skipped: records.length - rows.length };
 }
 
 /** Upsert FusionSolar monthly KPI records. */

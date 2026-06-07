@@ -1,41 +1,32 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { FusionSolarClient, loadFusionSolarEnv, STATIONS, getAlarms as getFsAlarms, CALL_DELAY } from '@/lib/fusionsolar';
-import { LivoltkClient, loadLivoltkEnv, getAlarms as getLvAlarms } from '@/lib/livoltek';
+/**
+ * cron-alarms — runs every 5 minutes
+ * Fetches active alarms from FusionSolar and LIVOLTEK,
+ * upserts new alarms and marks resolved ones.
+ */
 import {
-  upsertFusionSolarAlarms,
-  upsertLivoltkAlarms,
-  syncResolvedAlarms,
-  getStationNameMap,
-  logRefresh,
-} from '@/lib/db';
+  STATIONS, CALL_DELAY, sleep,
+  FusionSolarClient, loadFusionSolarEnv, getFsAlarms,
+  LivoltkClient, loadLivoltkEnv, getLvAlarms,
+  upsertFusionSolarAlarms, upsertLivoltkAlarms,
+  syncResolvedAlarms, getStationNameMap, logRefresh,
+} from './_shared/index.ts';
 
-export const maxDuration = 60;
-
-function verifyCronSecret(req: NextRequest): boolean {
-  return req.headers.get('authorization') === `Bearer ${process.env.CRON_SECRET}`;
-}
-
-export async function GET(req: NextRequest) {
-  if (!verifyCronSecret(req)) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
+Deno.serve(async (_req: Request) => {
   const startedAt = new Date();
   const results: {
     fusionsolar: { alarms: number; resolved: number } | null;
-    livoltek: { alarms: number; resolved: number } | null;
+    livoltek:    { alarms: number; resolved: number } | null;
   } = { fusionsolar: null, livoltek: null };
 
-  // ── FusionSolar alarms ────────────────────────────────────────────────────────
+  // ── FusionSolar alarms ──────────────────────────────────────────────────────
   try {
     const { username, password, baseUrl } = loadFusionSolarEnv();
     const client = new FusionSolarClient(username, password, baseUrl);
     await client.login();
-    await client.sleep(CALL_DELAY * 2);
+    await sleep(CALL_DELAY * 2);
 
-    const codes = STATIONS.map(s => s.code);
+    const codes  = STATIONS.map(s => s.code);
     const alarms = await getFsAlarms(client, codes);
-
     await upsertFusionSolarAlarms(alarms);
     await syncResolvedAlarms('fusionsolar', alarms.map(a => String(a.alarmId)));
 
@@ -47,13 +38,13 @@ export async function GET(req: NextRequest) {
     await logRefresh({ source: 'fusionsolar', jobType: 'alarms', stationsOk: 0, stationsError: 0, errorDetail: detail, startedAt });
   }
 
-  // ── LIVOLTEK alarms ───────────────────────────────────────────────────────────
+  // ── LIVOLTEK alarms ─────────────────────────────────────────────────────────
   try {
     const { email, password, accountType } = loadLivoltkEnv();
     const client = new LivoltkClient(email, password, accountType);
     const alarms = await getLvAlarms(client, 1);
 
-    const nameMap = await getStationNameMap('livoltek');
+    const nameMap  = await getStationNameMap('livoltek');
     await upsertLivoltkAlarms(alarms, nameMap);
 
     const activeIds = alarms.map(a => `${a.alarmCode}_${a.originTimeString}`);
@@ -67,5 +58,7 @@ export async function GET(req: NextRequest) {
     await logRefresh({ source: 'livoltek', jobType: 'alarms', stationsOk: 0, stationsError: 0, errorDetail: detail, startedAt });
   }
 
-  return NextResponse.json({ ok: true, ...results });
-}
+  return new Response(JSON.stringify({ ok: true, ...results }), {
+    headers: { 'Content-Type': 'application/json' },
+  });
+});

@@ -270,6 +270,19 @@ export interface StationKpiDayRecord {
 }
 
 /**
+ * Hourly PV yield record — from getKpiStationHour (undocumented Northbound endpoint).
+ * Returns 24 records per station per day (one per hour UTC).
+ * inverterPower is kWh generated in that hour ≈ average kW for that hour.
+ */
+export interface StationKpiHourRecord {
+  collectTime: number;  // unix ms — exact hour boundary (UTC)
+  hour: string;         // ISO timestamp e.g. "2026-06-04T09:00:00.000Z"
+  stationCode: string;
+  inverterPower: number | null;   // kWh in this hour (null = nighttime / no data)
+  radiationIntensity: number | null; // kWh/m² solar irradiance
+}
+
+/**
  * Monthly PV yield record — from getKpiStationMonth.
  */
 export interface StationKpiMonthRecord {

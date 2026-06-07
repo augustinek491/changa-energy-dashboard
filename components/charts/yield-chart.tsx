@@ -12,9 +12,8 @@ import {
   Area,
 } from 'recharts';
 
-interface DayPoint { date: string; total_kwh: number }
-interface MonthPoint { year_month: string; total_kwh: number }
-type DataPoint = DayPoint | MonthPoint;
+// Accepts both analytics shape (total_kwh) and station-detail shape (pv_yield_kwh)
+type DataPoint = Record<string, unknown>;
 
 interface YieldChartProps {
   data: DataPoint[];
@@ -22,15 +21,29 @@ interface YieldChartProps {
   color?: string;
 }
 
+function getKwh(d: DataPoint): number {
+  return (d.total_kwh ?? d.pv_yield_kwh ?? 0) as number;
+}
+
 function labelFor(d: DataPoint, range: string): string {
-  if ('date' in d) {
-    const dt = new Date(d.date);
+  const date = d.date as string | undefined;
+  const yearMonth = d.year_month as string | undefined;
+
+  if (date) {
+    const dt = new Date(date);
+    if (isNaN(dt.getTime())) return date;
     return range === 'month'
       ? dt.toLocaleDateString([], { month: 'short', day: 'numeric' })
-      : d.date;
+      : date;
   }
-  const [y, m] = d.year_month.split('-');
-  return new Date(+y, +m - 1, 1).toLocaleDateString([], { month: 'short', year: '2-digit' });
+
+  if (!yearMonth) return '';
+  const parts = yearMonth.split('-');
+  if (parts.length < 2) return yearMonth;
+  const [y, m] = parts;
+  const dt = new Date(+y, +m - 1, 1);
+  if (isNaN(dt.getTime())) return yearMonth;
+  return dt.toLocaleDateString([], { month: 'short', year: '2-digit' });
 }
 
 const TooltipContent = ({ active, payload, label }: {
@@ -39,6 +52,7 @@ const TooltipContent = ({ active, payload, label }: {
   label?: string;
 }) => {
   if (!active || !payload?.length) return null;
+  const val = payload[0].value ?? 0;
   return (
     <div
       className="rounded-lg px-3 py-2.5 text-xs shadow-xl"
@@ -46,7 +60,9 @@ const TooltipContent = ({ active, payload, label }: {
     >
       <p className="font-medium mb-1" style={{ color: 'var(--text-secondary)' }}>{label}</p>
       <p className="font-bold text-sm" style={{ color: 'var(--text-primary)' }}>
-        {(payload[0].value ?? 0).toLocaleString()} kWh
+        {val >= 1000
+          ? `${(val / 1000).toFixed(2)} MWh`
+          : `${val.toLocaleString(undefined, { maximumFractionDigits: 1 })} kWh`}
       </p>
     </div>
   );
@@ -56,7 +72,7 @@ export function YieldChart({ data, range, color }: YieldChartProps) {
   if (!data.length) {
     return (
       <div className="flex items-center justify-center h-64" style={{ color: 'var(--text-muted)' }}>
-        No yield data available
+        No yield data available for this period
       </div>
     );
   }
@@ -65,13 +81,15 @@ export function YieldChart({ data, range, color }: YieldChartProps) {
 
   const chartData = data.map(d => ({
     label: labelFor(d, range),
-    kwh: d.total_kwh,
+    kwh: getKwh(d),
   }));
 
   const step = Math.max(1, Math.floor(chartData.length / 10));
   const ticks = chartData.filter((_, i) => i % step === 0).map(d => d.label);
-
   const tickStyle = { fontSize: 11, fill: 'var(--text-muted)' };
+
+  const yFormatter = (v: number) =>
+    v >= 1000 ? `${(v / 1000).toFixed(1)}MWh` : `${v}kWh`;
 
   if (range === 'all' && data.length > 6) {
     return (
@@ -85,7 +103,7 @@ export function YieldChart({ data, range, color }: YieldChartProps) {
           </defs>
           <CartesianGrid strokeDasharray="3 3" vertical={false} />
           <XAxis dataKey="label" ticks={ticks} tick={tickStyle} axisLine={false} tickLine={false} />
-          <YAxis tick={tickStyle} axisLine={false} tickLine={false} tickFormatter={v => `${v}kWh`} width={60} />
+          <YAxis tick={tickStyle} axisLine={false} tickLine={false} tickFormatter={yFormatter} width={64} />
           <Tooltip content={<TooltipContent />} />
           <Area
             type="monotone"
@@ -103,10 +121,14 @@ export function YieldChart({ data, range, color }: YieldChartProps) {
 
   return (
     <ResponsiveContainer width="100%" height={300}>
-      <BarChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }} barSize={range === 'month' ? 12 : 20}>
+      <BarChart
+        data={chartData}
+        margin={{ top: 4, right: 8, left: 0, bottom: 0 }}
+        barSize={range === 'month' ? 12 : 20}
+      >
         <CartesianGrid strokeDasharray="3 3" vertical={false} />
         <XAxis dataKey="label" ticks={ticks} tick={tickStyle} axisLine={false} tickLine={false} />
-        <YAxis tick={tickStyle} axisLine={false} tickLine={false} tickFormatter={v => `${v}kWh`} width={60} />
+        <YAxis tick={tickStyle} axisLine={false} tickLine={false} tickFormatter={yFormatter} width={64} />
         <Tooltip content={<TooltipContent />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
         <Bar dataKey="kwh" name="Yield" fill={accentColor} radius={[3, 3, 0, 0]} />
       </BarChart>
