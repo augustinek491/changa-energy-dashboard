@@ -30,53 +30,56 @@ const BATCH_SIZE = 2;
 const batchStart    = batchIndex * BATCH_SIZE;
 const batchStations = STATIONS.slice(batchStart, batchStart + BATCH_SIZE);
 
-if (batchStations.length === 0) {
-  console.log(`Batch ${batchIndex} is out of range (${STATIONS.length} plants, batch size ${BATCH_SIZE}) — nothing to do.`);
-  process.exit(0);
+async function main() {
+  if (batchStations.length === 0) {
+    console.log(`Batch ${batchIndex} out of range (${STATIONS.length} plants, size ${BATCH_SIZE}) — nothing to do.`);
+    return;
+  }
+
+  console.log(`FusionSolar cron — batch ${batchIndex}: ${batchStations.map(s => s.name).join(', ')}`);
+
+  const startedAt = new Date();
+
+  try {
+    const { username, password, baseUrl } = loadFusionSolarEnv();
+    const client = new FusionSolarClient(username, password, baseUrl);
+
+    const loginOk = await client.login();
+    if (!loginOk) throw new Error('FusionSolar login failed');
+    await client.sleep(CALL_DELAY * 2);
+
+    const data  = await fetchDashboardData(client, batchStations);
+    const items = data.map((record, i) => ({ stationCode: batchStations[i].code, record }));
+    const r     = await upsertFusionSolarLive(items);
+
+    await logRefresh({
+      source:        'fusionsolar',
+      jobType:       'live',
+      stationsOk:    r.ok,
+      stationsError: r.errors,
+      startedAt,
+    });
+
+    console.log(`Done — ok: ${r.ok}, errors: ${r.errors}`);
+  } catch (err) {
+    const cause  = err instanceof Error && (err as NodeJS.ErrnoException).cause;
+    const detail = err instanceof Error
+      ? `${err.message}${cause ? ` | cause: ${cause}` : ''}`
+      : String(err);
+
+    console.error(`FusionSolar cron failed: ${detail}`);
+
+    await logRefresh({
+      source:        'fusionsolar',
+      jobType:       'live',
+      stationsOk:    0,
+      stationsError: batchStations.length,
+      errorDetail:   detail,
+      startedAt,
+    }).catch(() => {});
+
+    process.exit(1);
+  }
 }
 
-console.log(`FusionSolar cron — batch ${batchIndex}: ${batchStations.map(s => s.name).join(', ')}`);
-
-const startedAt = new Date();
-
-try {
-  const { username, password, baseUrl } = loadFusionSolarEnv();
-  const client = new FusionSolarClient(username, password, baseUrl);
-
-  const loginOk = await client.login();
-  if (!loginOk) throw new Error('FusionSolar login failed');
-  await client.sleep(CALL_DELAY * 2);
-
-  const data  = await fetchDashboardData(client, batchStations);
-  const items = data.map((record, i) => ({ stationCode: batchStations[i].code, record }));
-  const r     = await upsertFusionSolarLive(items);
-
-  await logRefresh({
-    source:        'fusionsolar',
-    jobType:       'live',
-    stationsOk:    r.ok,
-    stationsError: r.errors,
-    startedAt,
-  });
-
-  console.log(`Done — ok: ${r.ok}, errors: ${r.errors}`);
-  process.exit(0);
-} catch (err) {
-  const cause  = err instanceof Error && (err as NodeJS.ErrnoException).cause;
-  const detail = err instanceof Error
-    ? `${err.message}${cause ? ` | cause: ${cause}` : ''}`
-    : String(err);
-
-  console.error(`FusionSolar cron failed: ${detail}`);
-
-  await logRefresh({
-    source:        'fusionsolar',
-    jobType:       'live',
-    stationsOk:    0,
-    stationsError: batchStations.length,
-    errorDetail:   detail,
-    startedAt,
-  }).catch(() => {});
-
-  process.exit(1);
-}
+main();
