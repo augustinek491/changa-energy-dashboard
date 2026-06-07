@@ -1,16 +1,1 @@
-{
-  "crons": [
-    {
-      "path": "/api/cron/fusionsolar-live?batch=0",
-      "schedule": "*/15 * * * *"
-    },
-    {
-      "path": "/api/cron/fusionsolar-live?batch=1",
-      "schedule": "2-59/15 * * * *"
-    },
-    {
-      "path": "/api/cron/fusionsolar-live?batch=2",
-      "schedule": "4-59/15 * * * *"
-    }
-  ]
-}
+{}

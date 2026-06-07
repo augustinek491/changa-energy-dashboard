@@ -1,0 +1,20 @@
+name: FusionSolar Live — Batch 2 (plant 5)
+
+on:
+  schedule:
+    # Runs at :04, :19, :34, :49 every hour (4-minute stagger after batch 0)
+    - cron: "4,19,34,49 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Fetch batch 2
+        run: |
+          response=$(curl -sf \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "${{ secrets.VERCEL_APP_URL }}/api/cron/fusionsolar-live?batch=2")
+          echo "$response"
+          echo "$response" | grep -q '"ok":true' || exit 1
