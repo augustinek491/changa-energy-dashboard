@@ -113,7 +113,11 @@ export async function GET(req: NextRequest) {
       err_count: r.errors,
     });
   } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
+    const cause  = err instanceof Error && (err as NodeJS.ErrnoException).cause;
+    const detail = err instanceof Error
+      ? `${err.message}${cause ? ` | cause: ${cause}` : ''}`
+      : String(err);
+    console.error('FusionSolar cron error:', detail);
     await logRefresh({
       source:        'fusionsolar',
       jobType:       'live',
