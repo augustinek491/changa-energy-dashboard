@@ -35,22 +35,32 @@ const SERIES = [
   { key: 'battery_power_kw', name: 'Battery',       color: '#8B5CF6', dashed: true  },
 ];
 
+/**
+ * Convert a UTC ISO timestamp to a Date object anchored in SAST (UTC+2).
+ * All Changa Energy stations are in South Africa — we always display data
+ * in South African Standard Time regardless of the viewer's browser timezone.
+ */
+function toSAST(ts: string): Date {
+  return new Date(new Date(ts).getTime() + 2 * 60 * 60 * 1000);
+}
+
 function formatTime(ts: string, range: 'day' | 'week') {
-  const d = new Date(ts);
-  if (range === 'day') {
-    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  }
-  return d.toLocaleDateString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+  const sast = toSAST(ts);
+  const h = String(sast.getUTCHours()).padStart(2, '0');
+  const m = String(sast.getUTCMinutes()).padStart(2, '0');
+  if (range === 'day') return `${h}:${m}`;
+  const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  return `${days[sast.getUTCDay()]} ${h}:${m}`;
 }
 
 /**
- * Snap a UTC ISO timestamp to the nearest grid slot label in browser-local time.
+ * Snap a UTC ISO timestamp to the nearest grid slot label in SAST (UTC+2).
  * Returns "HH:MM" rounded down to the nearest 5-min or 1-hour boundary.
  */
 function snapToSlot(ts: string, granularity: '5min' | 'hour'): string {
-  const d = new Date(ts);
-  const h = d.getHours();
-  const m = d.getMinutes();
+  const sast = toSAST(ts);
+  const h = sast.getUTCHours();
+  const m = sast.getUTCMinutes();
   if (granularity === 'hour') {
     return `${String(h).padStart(2, '0')}:00`;
   }

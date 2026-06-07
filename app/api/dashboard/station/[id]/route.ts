@@ -71,8 +71,12 @@ export async function GET(
   const source = stationRes.data.source;
 
   if (range === 'day') {
-    const dayStart = `${dateParam}T00:00:00.000Z`;
-    const dayEnd   = `${dateParam}T23:59:59.999Z`;
+    // Use SAST (UTC+2) day boundaries — all stations are in South Africa.
+    // Querying UTC midnight would return the wrong window for any viewer
+    // not in UTC, causing morning data to be missing and overnight data
+    // to spill into the wrong day's chart.
+    const dayStart = `${dateParam}T00:00:00.000+02:00`;
+    const dayEnd   = `${dateParam}T23:59:59.999+02:00`;
 
     if (source === 'livoltek') {
       const { data } = await db
