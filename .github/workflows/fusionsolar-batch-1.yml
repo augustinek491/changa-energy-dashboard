@@ -10,17 +10,16 @@ jobs:
   fetch:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: changa-dashboard
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: npm
-          cache-dependency-path: changa-dashboard/package-lock.json
       - run: npm ci
-        working-directory: changa-dashboard
       - name: Fetch batch 1
-        working-directory: changa-dashboard
         env:
           FUSIONSOLAR_USERNAME: ${{ secrets.FUSIONSOLAR_USERNAME }}
           FUSIONSOLAR_PASSWORD: ${{ secrets.FUSIONSOLAR_PASSWORD }}
