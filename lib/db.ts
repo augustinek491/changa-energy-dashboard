@@ -113,6 +113,64 @@ export async function upsertFusionSolarLive(
   return { ok: rows.length, errors };
 }
 
+/**
+ * Upsert live FusionSolar data from the BATCHED station-KPI endpoint only.
+ * Used by the GitHub Actions worker — no per-device calls, so power data
+ * (load/grid/battery/temperature/irradiance) is unavailable. pv_power_kw is an
+ * estimate derived from the most recent non-null hourly reading.
+ *
+ * Unlike upsertFusionSolarLive, this does NOT dual-write to station_readings:
+ * the canonical FusionSolar time-series is the hourly curve written by
+ * upsertFusionSolarHourlyReadings. Mixing 5-min snapshots with hourly points
+ * would corrupt the chart's granularity detection.
+ */
+export async function upsertFusionSolarLiveKpi(
+  items: Array<{
+    stationCode: string;
+    pvPowerKw: number | null;
+    today: number | null;
+    month: number | null;
+    total: number | null;
+    health: number | null;
+  }>,
+): Promise<{ ok: number; errors: number }> {
+  const supabase = getClient();
+  const idMap = await getStationIdMap('fusionsolar');
+
+  const rows: Record<string, unknown>[] = [];
+  let errors = 0;
+
+  for (const it of items) {
+    const stationId = idMap.get(it.stationCode);
+    if (!stationId) { errors++; continue; }
+    rows.push({
+      station_id:       stationId,
+      fetched_at:       new Date().toISOString(),
+      pv_power_kw:      it.pvPowerKw,
+      load_power_kw:    null,
+      grid_power_kw:    null,
+      battery_soc:      null,
+      battery_power_kw: null,
+      health_state:     it.health,
+      status:           null,
+      temperature_c:    null,
+      irradiance_wm2:   null,
+      today_kwh:        it.today,
+      month_kwh:        it.month,
+      total_kwh:        it.total,
+    });
+  }
+
+  if (rows.length > 0) {
+    const { error } = await supabase
+      .from('station_live')
+      .upsert(rows, { onConflict: 'station_id' });
+    if (error) throw new Error(`upsertFusionSolarLiveKpi: ${error.message}`);
+  }
+
+  return { ok: rows.length, errors };
+}
+
 /** Upsert live LIVOLTEK data. SiteLive.id is the numeric site ID = source_code. */
 export async function upsertLivoltkLive(
   records: SiteLive[],

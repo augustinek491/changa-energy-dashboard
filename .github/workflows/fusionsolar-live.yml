@@ -1,0 +1,40 @@
+name: FusionSolar Live Snapshot
+
+# Live totals + health + today's generation curve for the whole FusionSolar fleet.
+# One batched sweep (~2-3 API calls total) regardless of fleet size.
+#
+# GitHub Actions scheduled runs are best-effort (they can fire late or skip under
+# load), so we schedule generously across daylight rather than relying on exact
+# timing. Off-peak minutes (:07/:37) avoid the top-of-hour congestion when most
+# of GitHub's cron jobs fire. Times are UTC; SA daylight ~04:00-15:00 UTC.
+
+on:
+  schedule:
+    - cron: "7,37 4-15 * * *"
+  workflow_dispatch: {}
+
+# Cancel an in-flight run if a new one starts — never overlap Huawei sessions.
+concurrency:
+  group: fusionsolar-live
+  cancel-in-progress: false
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - name: Add Huawei host entry (GitHub DNS blocks *.huawei.com)
+        run: echo "119.8.160.213 intl.fusionsolar.huawei.com" | sudo tee -a /etc/hosts
+      - run: npm ci
+      - name: Fetch live snapshot
+        env:
+          FUSIONSOLAR_USERNAME: ${{ secrets.FUSIONSOLAR_USERNAME }}
+          FUSIONSOLAR_PASSWORD: ${{ secrets.FUSIONSOLAR_PASSWORD }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: npx tsx scripts/fusionsolar-worker.ts --mode live

@@ -1,54 +1,25 @@
 /**
  * cron-daily — runs every hour
- * 1. FusionSolar daily KPIs (getKpiStationDay) → station_kpi_day
- * 2. FusionSolar hourly readings for today + yesterday → station_readings
- * 3. LIVOLTEK daily KPIs (derived from live data) → station_kpi_day
+ * 1. LIVOLTEK daily KPIs (derived from live data) → station_kpi_day
+ * 2. LIVOLTEK intraday self-heal (today + yesterday) → station_readings
+ *
+ * NOTE: FusionSolar is NOT handled here. Huawei IP-blocks Supabase EU West, so
+ * all FusionSolar fetching runs on GitHub Actions (scripts/fusionsolar-worker.ts).
+ * Do not add FusionSolar calls back into this function — they will always fail
+ * with the disguised 20400 IP-block response.
  */
 import {
-  STATIONS, CALL_DELAY, sleep,
-  FusionSolarClient, loadFusionSolarEnv,
-  getStationKpiDay, getStationKpiHour,
   LivoltkClient, loadLivoltkEnv, getAllSitesLive,
-  upsertFusionSolarKpiDay, upsertFusionSolarHourlyReadings,
   upsertLivoltkKpiDay, logRefresh,
-  ALL_SITE_IDS, getStationIdMap,
+  ALL_SITE_IDS, getStationIdMap, sleep,
   getLivoltkSiteIntraday, upsertLivoltkIntradayReadings,
 } from './_shared/index.ts';
 
 Deno.serve(async (_req: Request) => {
   const startedAt = new Date();
   const today     = new Date().toISOString().slice(0, 10);
-  const codes     = STATIONS.map(s => s.code);
 
-  let fsResult = { ok: 0, errors: 0 };
   let lvResult = { ok: 0, errors: 0 };
-
-  // ── FusionSolar daily KPIs ──────────────────────────────────────────────────
-  try {
-    const { username, password, baseUrl } = loadFusionSolarEnv();
-    const client = new FusionSolarClient(username, password, baseUrl);
-    await client.login();
-    await sleep(CALL_DELAY * 2);
-
-    // Daily KPIs
-    const dayRecords = await getStationKpiDay(client, codes);
-    await upsertFusionSolarKpiDay(dayRecords);
-    fsResult = { ok: dayRecords.length, errors: 0 };
-    await logRefresh({ source: 'fusionsolar', jobType: 'daily', stationsOk: dayRecords.length, stationsError: 0, startedAt });
-
-    // Hourly readings: today + yesterday (seamless midnight transition)
-    await sleep(CALL_DELAY);
-    for (const date of [new Date(), new Date(Date.now() - 86_400_000)]) {
-      const hourRecords = await getStationKpiHour(client, codes, date);
-      if (hourRecords.length > 0) await upsertFusionSolarHourlyReadings(hourRecords);
-      await sleep(CALL_DELAY);
-    }
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    console.error('FusionSolar daily job failed:', detail);
-    fsResult = { ok: 0, errors: STATIONS.length };
-    await logRefresh({ source: 'fusionsolar', jobType: 'daily', stationsOk: 0, stationsError: STATIONS.length, errorDetail: detail, startedAt });
-  }
 
   // ── LIVOLTEK daily KPIs (derived from live data) ────────────────────────────
   try {
@@ -121,7 +92,7 @@ Deno.serve(async (_req: Request) => {
     });
   }
 
-  return new Response(JSON.stringify({ ok: true, fusionsolar: fsResult, livoltek: lvResult, livoltek_intraday: intradayResult }), {
+  return new Response(JSON.stringify({ ok: true, livoltek: lvResult, livoltek_intraday: intradayResult }), {
     headers: { 'Content-Type': 'application/json' },
   });
 });
