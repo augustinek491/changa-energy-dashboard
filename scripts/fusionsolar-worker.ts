@@ -42,11 +42,14 @@ import {
   getStationRealKpis,
   getStationKpiHour,
   getStationKpiDay,
+  getAlarms,
 } from '../lib/fusionsolar';
 import {
   upsertFusionSolarLiveKpi,
   upsertFusionSolarHourlyReadings,
   upsertFusionSolarKpiDay,
+  upsertFusionSolarAlarms,
+  syncResolvedAlarms,
   logRefresh,
 } from '../lib/db';
 import type { StationKpiHourRecord } from '../lib/types';
@@ -111,7 +114,21 @@ async function runLive(client: FusionSolarClient) {
   // 4. Write today's curve into station_readings
   const hr = await upsertFusionSolarHourlyReadings(hourly);
 
-  console.log(`live — station_live ok:${live.ok} err:${live.errors} | hourly written:${hr.written} skipped:${hr.skipped}`);
+  // 5. Active alarms. Moved here from the Supabase cron-alarms function, which
+  //    can never reach Huawei (IP-blocked, disguised 20400). Non-fatal: an alarm
+  //    fetch failure must not sink the live snapshot above.
+  let alarmCount = 0;
+  try {
+    await client.sleep(CALL_DELAY);
+    const alarms = await getAlarms(client, ALL_CODES);
+    await upsertFusionSolarAlarms(alarms);
+    await syncResolvedAlarms('fusionsolar', alarms.map(a => String(a.alarmId)));
+    alarmCount = alarms.length;
+  } catch (err) {
+    console.error('FusionSolar alarms fetch failed (non-fatal):', err instanceof Error ? err.message : String(err));
+  }
+
+  console.log(`live — station_live ok:${live.ok} err:${live.errors} | hourly written:${hr.written} skipped:${hr.skipped} | alarms:${alarmCount}`);
   return { ok: live.ok, errors: live.errors };
 }
 

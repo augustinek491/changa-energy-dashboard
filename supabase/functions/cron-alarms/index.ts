@@ -1,42 +1,21 @@
 /**
  * cron-alarms — runs every 5 minutes
- * Fetches active alarms from FusionSolar and LIVOLTEK,
- * upserts new alarms and marks resolved ones.
+ * Fetches active LIVOLTEK alarms, upserts new ones and marks resolved ones.
+ *
+ * NOTE: FusionSolar alarms are NOT fetched here. Huawei IP-blocks Supabase, so
+ * FusionSolar alarm fetching now runs in the GitHub Actions worker
+ * (scripts/fusionsolar-worker.ts, live mode). Do not add FusionSolar calls back
+ * into this function — they will always fail with the disguised 20400 IP-block.
  */
 import {
-  STATIONS, CALL_DELAY, sleep,
-  FusionSolarClient, loadFusionSolarEnv, getFsAlarms,
   LivoltkClient, loadLivoltkEnv, getLvAlarms,
-  upsertFusionSolarAlarms, upsertLivoltkAlarms,
-  syncResolvedAlarms, getStationNameMap, logRefresh,
+  upsertLivoltkAlarms, syncResolvedAlarms,
+  getStationNameMap, logRefresh,
 } from './_shared/index.ts';
 
 Deno.serve(async (_req: Request) => {
   const startedAt = new Date();
-  const results: {
-    fusionsolar: { alarms: number; resolved: number } | null;
-    livoltek:    { alarms: number; resolved: number } | null;
-  } = { fusionsolar: null, livoltek: null };
-
-  // ── FusionSolar alarms ──────────────────────────────────────────────────────
-  try {
-    const { username, password, baseUrl } = loadFusionSolarEnv();
-    const client = new FusionSolarClient(username, password, baseUrl);
-    await client.login();
-    await sleep(CALL_DELAY * 2);
-
-    const codes  = STATIONS.map(s => s.code);
-    const alarms = await getFsAlarms(client, codes);
-    await upsertFusionSolarAlarms(alarms);
-    await syncResolvedAlarms('fusionsolar', alarms.map(a => String(a.alarmId)));
-
-    results.fusionsolar = { alarms: alarms.length, resolved: 0 };
-    await logRefresh({ source: 'fusionsolar', jobType: 'alarms', stationsOk: alarms.length, stationsError: 0, startedAt });
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    console.error('FusionSolar alarms job failed:', detail);
-    await logRefresh({ source: 'fusionsolar', jobType: 'alarms', stationsOk: 0, stationsError: 0, errorDetail: detail, startedAt });
-  }
+  let livoltek: { alarms: number; resolved: number } | null = null;
 
   // ── LIVOLTEK alarms ─────────────────────────────────────────────────────────
   try {
@@ -50,7 +29,7 @@ Deno.serve(async (_req: Request) => {
     const activeIds = alarms.map(a => `${a.alarmCode}_${a.originTimeString}`);
     await syncResolvedAlarms('livoltek', activeIds);
 
-    results.livoltek = { alarms: alarms.length, resolved: 0 };
+    livoltek = { alarms: alarms.length, resolved: 0 };
     await logRefresh({ source: 'livoltek', jobType: 'alarms', stationsOk: alarms.length, stationsError: 0, startedAt });
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
@@ -58,7 +37,7 @@ Deno.serve(async (_req: Request) => {
     await logRefresh({ source: 'livoltek', jobType: 'alarms', stationsOk: 0, stationsError: 0, errorDetail: detail, startedAt });
   }
 
-  return new Response(JSON.stringify({ ok: true, ...results }), {
+  return new Response(JSON.stringify({ ok: true, livoltek }), {
     headers: { 'Content-Type': 'application/json' },
   });
 });

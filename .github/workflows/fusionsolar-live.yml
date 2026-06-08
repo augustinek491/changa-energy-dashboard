@@ -1,16 +1,15 @@
 name: FusionSolar Live Snapshot
 
-# Live totals + health + today's generation curve for the whole FusionSolar fleet.
-# One batched sweep (~2-3 API calls total) regardless of fleet size.
+# Live totals + health + today's generation curve + active alarms for the whole
+# FusionSolar fleet. One batched sweep (~3-4 API calls total) regardless of size.
 #
-# GitHub Actions scheduled runs are best-effort (they can fire late or skip under
-# load), so we schedule generously across daylight rather than relying on exact
-# timing. Off-peak minutes (:07/:37) avoid the top-of-hour congestion when most
-# of GitHub's cron jobs fire. Times are UTC; SA daylight ~04:00-15:00 UTC.
+# Scheduling is driven by Supabase pg_cron, which calls this workflow via the
+# GitHub API (workflow_dispatch) every 15 min during SA daylight. GitHub's own
+# `schedule:` trigger is intentionally NOT used — it is best-effort and routinely
+# fires late or skips, which is unacceptable for a near-live feel. pg_cron fires
+# reliably. See the Supabase cron job `gh-trigger-fusionsolar-live`.
 
 on:
-  schedule:
-    - cron: "7,37 4-15 * * *"
   workflow_dispatch: {}
 
 # Cancel an in-flight run if a new one starts — never overlap Huawei sessions.
