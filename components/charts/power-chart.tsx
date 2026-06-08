@@ -78,13 +78,28 @@ type ChartPoint = {
 
 /**
  * Build a full 00:00–23:59 day skeleton (288 × 5-min or 24 × 1-hour slots) in
- * browser-local time and merge real readings into the matching slots.
+ * SAST and merge real readings into the matching slots. The X-axis always spans
+ * the whole day; missing slots stay null (rendered as a gap, not a zero).
  *
- * Empty slots stay null for EVERY series — including PV. A null is rendered as a
- * gap (the line interrupts), not as a zero. This keeps the X-axis spanning the
- * whole day while ensuring the curve and its shading only appear where a real
- * reading exists. A flat line at zero would falsely imply "power was zero" when
- * the truth is simply "no data yet / not available".
+ * PV power gets special, generation-aware treatment so the green curve reflects
+ * reality cleanly:
+ *
+ *   • "Daylight window" = the span between the first and last slot that actually
+ *     produced power (> 0). This is derived from the data itself, so it adjusts
+ *     per site, per day, per season — no hard-coded sunrise/sunset.
+ *
+ *   • OUTSIDE the window (night, before sunrise / after sunset): PV is hidden
+ *     entirely. Both a real 0 and a missing reading become a gap, so the curve
+ *     only appears while the panels were genuinely working. This is what stops
+ *     the misleading flat-zero stub appearing before 06:00.
+ *
+ *   • INSIDE the window (daytime): PV is shown as-is, including a real 0 — which
+ *     dives the line to the floor and makes a mid-day inverter fault obvious.
+ *     A null inside the window stays a gap, so a genuine data outage is still
+ *     visually distinct from a confirmed-zero fault.
+ *
+ * Load / Grid / Battery are unaffected — they keep their plain null-is-a-gap
+ * behaviour, since those are meaningful at night too.
  */
 function buildDayGrid(granularity: '5min' | 'hour', readings: Reading[]): ChartPoint[] {
   const map = new Map<string, Reading>();
@@ -100,11 +115,31 @@ function buildDayGrid(granularity: '5min' | 'hour', readings: Reading[]): ChartP
       })
     : Array.from({ length: 24 }, (_, h) => `${String(h).padStart(2, '0')}:00`);
 
-  return slots.map(t => {
+  // Raw PV value per slot (number | null), in chronological order.
+  const pvRaw: (number | null)[] = slots.map(t => {
+    const v = map.get(t)?.pv_power_kw;
+    return typeof v === 'number' ? v : null;
+  });
+
+  // Daylight window = first..last slot that produced power (> 0).
+  let firstGen = -1;
+  let lastGen = -1;
+  for (let i = 0; i < pvRaw.length; i++) {
+    const v = pvRaw[i];
+    if (v !== null && v > 0) {
+      if (firstGen === -1) firstGen = i;
+      lastGen = i;
+    }
+  }
+
+  return slots.map((t, i) => {
     const r = map.get(t);
+    const inDaylight = firstGen !== -1 && i >= firstGen && i <= lastGen;
     return {
       t,
-      pv_power_kw:      r?.pv_power_kw      ?? null,  // null = no reading → gap, not a misleading zero
+      // Inside daylight: show the value (incl. a real 0 = fault dip); null stays a
+      // gap. Outside daylight: hide PV entirely so night is clean.
+      pv_power_kw:      inDaylight ? pvRaw[i] : null,
       load_power_kw:    r?.load_power_kw    ?? null,  // null = unknown when inverter off
       grid_power_kw:    r?.grid_power_kw    ?? null,
       battery_power_kw: r?.battery_power_kw ?? null,
