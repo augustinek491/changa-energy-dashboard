@@ -214,6 +214,18 @@ function to5MinSlot(d: Date): string {
   return new Date(ms).toISOString();
 }
 
+/**
+ * Snap a timestamp down to the top of its UTC hour. Returns null if unparseable.
+ * Write-side guard so FusionSolar only ever lands on-the-hour rows in
+ * station_readings (FusionSolar curve is hourly; sub-hour rows break the chart).
+ */
+function toHourSlot(input: string | Date): string | null {
+  const d = input instanceof Date ? input : new Date(input);
+  if (Number.isNaN(d.getTime())) return null;
+  d.setUTCMinutes(0, 0, 0);
+  return d.toISOString();
+}
+
 async function insertReadings(rows: Record<string, unknown>[]): Promise<void> {
   if (rows.length === 0) return;
   const db = getDbClient();
@@ -318,19 +330,12 @@ export async function upsertFusionSolarLive(
   if (rows.length > 0) {
     const { error } = await db.from('station_live').upsert(rows, { onConflict: 'station_id' });
     if (error) throw new Error(`upsertFusionSolarLive: ${error.message}`);
-    const slot = to5MinSlot(new Date());
-    await insertReadings(rows.map(r => ({
-      station_id:       r.station_id,
-      recorded_at:      slot,
-      pv_power_kw:      r.pv_power_kw,
-      load_power_kw:    r.load_power_kw,
-      grid_power_kw:    r.grid_power_kw,
-      battery_soc:      r.battery_soc,
-      battery_power_kw: r.battery_power_kw,
-      today_kwh:        r.today_kwh,
-      month_kwh:        r.month_kwh,
-      total_kwh:        r.total_kwh,
-    })));
+    // GUARD: do NOT dual-write FusionSolar to station_readings here. This used to
+    // insert a 5-min snapshot per run, polluting the hourly FusionSolar curve with
+    // sub-hour rows and breaking the chart line. The canonical FusionSolar
+    // time-series is the hourly curve from upsertFusionSolarHourlyReadings.
+    // This function is retained for station_live writes only and must never
+    // touch station_readings.
   }
   return { ok: rows.length, errors };
 }
@@ -417,9 +422,14 @@ export async function upsertFusionSolarHourlyReadings(
     .map(r => {
       const stationId = idMap.get(r.stationCode);
       if (!stationId) return null;
+      // GUARD: snap recorded_at to the top of the hour so a malformed collectTime
+      // can never write a sub-hour row into the hourly FusionSolar curve. Skip
+      // unparseable timestamps.
+      const onHour = toHourSlot(r.hour);
+      if (!onHour) return null;
       return {
         station_id:       stationId,
-        recorded_at:      r.hour,
+        recorded_at:      onHour,
         pv_power_kw:      r.inverterPower,
         load_power_kw:    null,
         grid_power_kw:    null,
