@@ -80,9 +80,11 @@ type ChartPoint = {
  * Build a full 00:00–23:59 day skeleton (288 × 5-min or 24 × 1-hour slots) in
  * browser-local time and merge real readings into the matching slots.
  *
- * PV power defaults to 0 for empty slots (genuinely no generation at night).
- * Load / Grid / Battery stay null when the inverter is off so those series
- * show a gap rather than a misleading flat zero.
+ * Empty slots stay null for EVERY series — including PV. A null is rendered as a
+ * gap (the line interrupts), not as a zero. This keeps the X-axis spanning the
+ * whole day while ensuring the curve and its shading only appear where a real
+ * reading exists. A flat line at zero would falsely imply "power was zero" when
+ * the truth is simply "no data yet / not available".
  */
 function buildDayGrid(granularity: '5min' | 'hour', readings: Reading[]): ChartPoint[] {
   const map = new Map<string, Reading>();
@@ -102,7 +104,7 @@ function buildDayGrid(granularity: '5min' | 'hour', readings: Reading[]): ChartP
     const r = map.get(t);
     return {
       t,
-      pv_power_kw:      r?.pv_power_kw      ?? 0,    // 0 = no solar at night
+      pv_power_kw:      r?.pv_power_kw      ?? null,  // null = no reading → gap, not a misleading zero
       load_power_kw:    r?.load_power_kw    ?? null,  // null = unknown when inverter off
       grid_power_kw:    r?.grid_power_kw    ?? null,
       battery_power_kw: r?.battery_power_kw ?? null,
@@ -213,7 +215,7 @@ export function PowerChart({ readings, range, granularity = '5min', date }: Powe
               strokeDasharray={s.dashed ? '4 3' : undefined}
               fill={`url(#grad-${s.key})`}
               dot={false}
-              connectNulls
+              connectNulls={false}
             />
           ))}
         </AreaChart>
