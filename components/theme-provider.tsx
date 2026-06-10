@@ -14,8 +14,8 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const stored = localStorage.getItem('changa-theme') as Theme | null;
-    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-    const initial = stored ?? (prefersDark ? 'dark' : 'light');
+    // Premium dark is the default tone; system preference no longer overrides.
+    const initial = stored ?? 'dark';
     setTheme(initial);
     applyTheme(initial);
   }, []);
