@@ -209,6 +209,30 @@ export async function updateFusionSolarLivePower(
   return { ok: rows.length, errors };
 }
 
+/**
+ * Current live PV power + freshness per FusionSolar station, keyed by source_code
+ * ('NE=...'). Lets the power job preserve a recent reading instead of overwriting
+ * it with a transient blank when Huawei omits a sweep's active_power.
+ */
+export async function getFusionSolarLivePower(): Promise<
+  Map<string, { kw: number | null; fetchedAt: string | null }>
+> {
+  const supabase = getClient();
+  const { data: stations } = await supabase
+    .from('stations').select('id, source_code').eq('source', 'fusionsolar');
+  const idToCode = new Map((stations ?? []).map(s => [s.id, String(s.source_code)]));
+  const ids = (stations ?? []).map(s => s.id);
+  const out = new Map<string, { kw: number | null; fetchedAt: string | null }>();
+  if (!ids.length) return out;
+  const { data } = await supabase
+    .from('station_live').select('station_id, pv_power_kw, fetched_at').in('station_id', ids);
+  for (const r of data ?? []) {
+    const code = idToCode.get(r.station_id);
+    if (code) out.set(code, { kw: r.pv_power_kw as number | null, fetchedAt: r.fetched_at as string | null });
+  }
+  return out;
+}
+
 /** Cached FusionSolar device inventory (see fusionsolar_devices migration). */
 export async function getFusionSolarDeviceCache(): Promise<
   Array<{ dev_id: string; station_code: string; dev_type_id: number }>

@@ -59,6 +59,7 @@ import {
   upsertFusionSolarAlarms,
   syncResolvedAlarms,
   updateFusionSolarLivePower,
+  getFusionSolarLivePower,
   getFusionSolarDeviceCache,
   saveFusionSolarDeviceCache,
   loadFusionSolarSession,
@@ -146,16 +147,12 @@ async function ensureDeviceCache(client: FusionSolarClient) {
   return devs;
 }
 
-async function runPower(client: FusionSolarClient) {
-  const reuse = await ensureSession(client);
-  console.log(`  session: ${reuse}`);
+type Inverter = { dev_id: string; station_code: string; dev_type_id: number };
 
-  const devices = await ensureDeviceCache(client);
-  const inverters = devices.filter(d => d.dev_type_id === 1);
-  if (!inverters.length) throw new Error('Device cache holds no inverters (dev_type_id=1)');
-
-  // One batched real-time call per 100 inverters. Called via apiPost directly
-  // so the failCode is visible for the expired-session retry below.
+/** One batched getDevRealKpi over the given inverters → summed active_power per
+ *  station_code. Handles an expired-session relogin. A station whose inverters
+ *  return no numeric active_power simply doesn't appear in the map (not 0). */
+async function fetchInverterPower(client: FusionSolarClient, inverters: Inverter[]): Promise<Map<string, number>> {
   const byStation = new Map<string, number>();
   for (const group of chunk(inverters, 100)) {
     const devIds = group.map(d => d.dev_id).join(',');
@@ -186,20 +183,62 @@ async function runPower(client: FusionSolarClient) {
     }
     await client.sleep(CALL_DELAY);
   }
+  return byStation;
+}
+
+/** Keep the previous reading rather than flicker to 0 when a healthy site misses
+ *  a sweep — but only while it's this fresh, so a genuinely-down site still surfaces. */
+const PRESERVE_MAX_AGE_MS = 30 * 60 * 1000;
+
+async function runPower(client: FusionSolarClient) {
+  const reuse = await ensureSession(client);
+  console.log(`  session: ${reuse}`);
+
+  const devices = await ensureDeviceCache(client);
+  const inverters: Inverter[] = devices.filter(d => d.dev_type_id === 1);
+  if (!inverters.length) throw new Error('Device cache holds no inverters (dev_type_id=1)');
+
+  // First sweep over all inverters.
+  const byStation = await fetchInverterPower(client, inverters);
+
+  // Huawei's getDevRealKpi intermittently omits active_power for an inverter.
+  // Retry once for just the stations that came back empty before giving up.
+  let missing = ALL_CODES.filter(c => !byStation.has(c) && inverters.some(d => d.station_code === c));
+  if (missing.length) {
+    console.log(`  retrying ${missing.length} station(s) with no inverter reading: ${missing.join(', ')}`);
+    await client.sleep(CALL_DELAY);
+    const retry = await fetchInverterPower(client, inverters.filter(d => missing.includes(d.station_code)));
+    for (const [st, kw] of retry) byStation.set(st, kw);
+    missing = missing.filter(c => !byStation.has(c));
+  }
 
   // Persist whatever token we hold now (apiPost may have rotated it).
   const t = getToken(client);
   if (t) await saveFusionSolarSession(t).catch(() => {});
 
-  // Stations with no responding inverter stay null — never invent a zero.
-  const items = ALL_CODES.map(code => ({
-    stationCode: code,
-    powerKw: byStation.has(code) ? Math.round(byStation.get(code)! * 1000) / 1000 : null,
-  }));
+  // Stations STILL without a reading: keep the last value if it's recent (don't
+  // wipe a real reading with a transient blank); fall back to null only once it's
+  // stale, so a genuinely-down site surfaces and the staleness alert can fire.
+  const preserve = new Set<string>();
+  if (missing.length) {
+    const snap = await getFusionSolarLivePower().catch(() => new Map());
+    const now = Date.now();
+    for (const c of missing) {
+      const s = snap.get(c);
+      if (s && s.kw != null && s.fetchedAt && now - new Date(s.fetchedAt).getTime() < PRESERVE_MAX_AGE_MS) {
+        preserve.add(c);
+      }
+    }
+  }
+
+  // Write real values + explicit null for stale-missing; skip preserved stations.
+  const items = ALL_CODES
+    .filter(c => !preserve.has(c))
+    .map(c => ({ stationCode: c, powerKw: byStation.has(c) ? Math.round(byStation.get(c)! * 1000) / 1000 : null }));
   const r = await updateFusionSolarLivePower(items);
 
-  const filled = items.filter(i => i.powerKw != null).length;
-  console.log(`power — stations:${items.length} with-power:${filled} | inverters:${inverters.length}`);
+  const filled = ALL_CODES.filter(c => byStation.has(c)).length;
+  console.log(`power — with-power:${filled}/${ALL_CODES.length} preserved:${preserve.size} | inverters:${inverters.length}`);
   return { ok: r.ok, errors: r.errors };
 }
 
