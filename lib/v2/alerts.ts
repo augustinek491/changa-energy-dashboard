@@ -39,7 +39,27 @@ export const CATEGORY_META: Record<AlertCategory, { label: string }> = {
   comms:       { label: 'Comms' },
 };
 
-const STALE_MS = 30 * 60 * 1000;
+/** Hour of day in South Africa, wherever the code runs (servers are UTC). */
+function sastHour(d: Date): number {
+  return Number(
+    new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Johannesburg', hour: 'numeric', hour12: false }).format(d),
+  );
+}
+
+/**
+ * "Stale comms" threshold per OEM, aware of each pipeline's REAL cadence:
+ *  - LIVOLTEK polls every 5 min around the clock → 30 min is generous.
+ *  - FusionSolar gets 5-min power + 15-min KPIs during the day, but only an
+ *    hourly KPI sweep overnight (by design) — a flat 30-min rule would spam
+ *    false "comms" warnings every night and into the 19:30 report.
+ */
+function staleThresholdMs(source: string, now: Date): number {
+  if (source === 'fusionsolar') {
+    const h = sastHour(now);
+    return h >= 6 && h < 20 ? 25 * 60 * 1000 : 75 * 60 * 1000;
+  }
+  return 30 * 60 * 1000;
+}
 
 function ts(iso: string | null): number {
   return iso ? new Date(iso).getTime() : 0;
@@ -47,7 +67,7 @@ function ts(iso: string | null): number {
 
 /** Build the alert feed for a set of stations. `now` is injectable for tests. */
 export function buildAlerts(stations: Station[], now: Date = new Date()): Alert[] {
-  const hour = now.getHours();
+  const hour = sastHour(now); // the SA solar day, not the server's local day
   const daylight = hour >= 7 && hour <= 17;
   const out: Alert[] = [];
 
@@ -107,9 +127,10 @@ export function buildAlerts(stations: Station[], now: Date = new Date()): Alert[
       });
     }
 
-    // Reading is stale even though the site is nominally online.
+    // Reading is stale even though the site is nominally online. The threshold
+    // follows each OEM pipeline's real cadence (see staleThresholdMs).
     const fa = ts(s.live?.fetched_at ?? null);
-    if (fa && now.getTime() - fa > STALE_MS) {
+    if (fa && now.getTime() - fa > staleThresholdMs(s.source, now)) {
       const mins = Math.round((now.getTime() - fa) / 60000);
       out.push({
         ...base, id: `${s.id}:comms`, severity: 'warning', category: 'comms',

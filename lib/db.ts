@@ -131,7 +131,6 @@ export async function upsertFusionSolarLive(
 export async function upsertFusionSolarLiveKpi(
   items: Array<{
     stationCode: string;
-    pvPowerKw: number | null;
     today: number | null;
     month: number | null;
     total: number | null;
@@ -147,10 +146,12 @@ export async function upsertFusionSolarLiveKpi(
   for (const it of items) {
     const stationId = idMap.get(it.stationCode);
     if (!stationId) { errors++; continue; }
+    // pv_power_kw is deliberately NOT written here — the 5-minute power job
+    // (worker --mode power) owns that column. Writing it from this upsert would
+    // overwrite fresh real-time kW with a stale hourly-curve estimate (or null).
     rows.push({
       station_id:       stationId,
       fetched_at:       new Date().toISOString(),
-      pv_power_kw:      it.pvPowerKw,
       load_power_kw:    null,
       grid_power_kw:    null,
       battery_soc:      null,
@@ -173,6 +174,90 @@ export async function upsertFusionSolarLiveKpi(
   }
 
   return { ok: rows.length, errors };
+}
+
+/**
+ * Write ONLY live PV power for FusionSolar stations — the 5-minute power job's
+ * single write. Partial upsert: untouched columns (today/month/total, health,
+ * curve data) keep whatever the 15-minute KPI job last wrote.
+ */
+export async function updateFusionSolarLivePower(
+  items: Array<{ stationCode: string; powerKw: number | null }>,
+): Promise<{ ok: number; errors: number }> {
+  const supabase = getClient();
+  const idMap = await getStationIdMap('fusionsolar');
+
+  const rows: Record<string, unknown>[] = [];
+  let errors = 0;
+  for (const it of items) {
+    const stationId = idMap.get(it.stationCode);
+    if (!stationId) { errors++; continue; }
+    rows.push({
+      station_id:  stationId,
+      fetched_at:  new Date().toISOString(),
+      pv_power_kw: it.powerKw,
+    });
+  }
+
+  if (rows.length > 0) {
+    const { error } = await supabase
+      .from('station_live')
+      .upsert(rows, { onConflict: 'station_id' });
+    if (error) throw new Error(`updateFusionSolarLivePower: ${error.message}`);
+  }
+
+  return { ok: rows.length, errors };
+}
+
+/** Cached FusionSolar device inventory (see fusionsolar_devices migration). */
+export async function getFusionSolarDeviceCache(): Promise<
+  Array<{ dev_id: string; station_code: string; dev_type_id: number }>
+> {
+  const supabase = getClient();
+  const { data, error } = await supabase
+    .from('fusionsolar_devices')
+    .select('dev_id, station_code, dev_type_id');
+  if (error) throw new Error(`getFusionSolarDeviceCache: ${error.message}`);
+  return data ?? [];
+}
+
+export async function saveFusionSolarDeviceCache(
+  devices: Array<{ id: number; stationCode: string; devTypeId: number; devName: string }>,
+): Promise<number> {
+  if (!devices.length) return 0; // never wipe the cache with an empty fetch
+  const supabase = getClient();
+  const rows = devices.map(d => ({
+    dev_id:       String(d.id),
+    station_code: d.stationCode,
+    dev_type_id:  d.devTypeId,
+    dev_name:     d.devName,
+    refreshed_at: new Date().toISOString(),
+  }));
+  const { error } = await supabase
+    .from('fusionsolar_devices')
+    .upsert(rows, { onConflict: 'dev_id' });
+  if (error) throw new Error(`saveFusionSolarDeviceCache: ${error.message}`);
+  return rows.length;
+}
+
+/** Shared Huawei session token (single row) — lets the 5-min power job skip login. */
+export async function loadFusionSolarSession(): Promise<{ token: string; obtainedAt: Date } | null> {
+  const supabase = getClient();
+  const { data } = await supabase
+    .from('fusionsolar_session')
+    .select('token, obtained_at')
+    .eq('id', 1)
+    .maybeSingle();
+  if (!data?.token) return null;
+  return { token: data.token, obtainedAt: new Date(data.obtained_at) };
+}
+
+export async function saveFusionSolarSession(token: string): Promise<void> {
+  const supabase = getClient();
+  const { error } = await supabase
+    .from('fusionsolar_session')
+    .upsert({ id: 1, token, obtained_at: new Date().toISOString() }, { onConflict: 'id' });
+  if (error) throw new Error(`saveFusionSolarSession: ${error.message}`);
 }
 
 /** Upsert live LIVOLTEK data. SiteLive.id is the numeric site ID = source_code. */

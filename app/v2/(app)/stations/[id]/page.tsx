@@ -283,6 +283,11 @@ export default function StationDetailV2() {
           </Vital>
           <Vital label="PV Power" icon={<Zap size={13} style={{ color: 'var(--accent)' }} />}>
             <Num>{fmt(live?.pv_power_kw ?? null)}</Num><U>kW</U>
+            {live?.fetched_at && (
+              <span className="block text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                as of {new Date(live.fetched_at).toLocaleTimeString('en-ZA', { timeZone: 'Africa/Johannesburg', hour: '2-digit', minute: '2-digit' })}
+              </span>
+            )}
           </Vital>
           <Vital label="Load" icon={<Activity size={13} style={{ color: '#F97316' }} />}>
             <Num>{fmt(live?.load_power_kw ?? null)}</Num><U>kW</U>

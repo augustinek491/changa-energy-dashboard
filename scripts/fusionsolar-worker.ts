@@ -15,17 +15,24 @@
  *   getKpiStationDay    → daily PV yield / station             (daily bars)
  *
  * Modes:
- *   --mode live    Fast snapshot. Station totals + health → station_live.
- *                  Today's hourly curve → station_readings. Runs every ~30 min
- *                  during daylight. pv_power_kw is estimated from the latest
- *                  non-null hourly point so the live card isn't blank.
+ *   --mode power   True real-time inverter power (getDevRealKpi, ~5-min fresh on
+ *                  Huawei's side) → station_live.pv_power_kw ONLY. Runs every
+ *                  5 min during daylight. This mode OWNS pv_power_kw; no other
+ *                  mode writes it. Inverter IDs come from the fusionsolar_devices
+ *                  cache (self-healing); the Huawei session token is shared via
+ *                  fusionsolar_session so most sweeps skip login entirely.
+ *
+ *   --mode live    KPI snapshot. Station totals + health → station_live (NOT
+ *                  pv_power_kw). Today's hourly curve → station_readings.
+ *                  Alarms. Runs every 15 min daylight / hourly night.
  *
  *   --mode rollup  Self-healing backfill. Re-fetches the FULL hourly curve and
  *                  daily totals for today AND yesterday, so any gaps from missed
  *                  live runs are repaired and yesterday's final figure lands once
- *                  the day closes. Runs 2x/day.
+ *                  the day closes. Also refreshes the device cache. Runs 2x/day.
  *
  * Usage:
+ *   npx tsx scripts/fusionsolar-worker.ts --mode power
  *   npx tsx scripts/fusionsolar-worker.ts --mode live
  *   npx tsx scripts/fusionsolar-worker.ts --mode rollup
  *
@@ -42,6 +49,7 @@ import {
   getStationRealKpis,
   getStationKpiHour,
   getStationKpiDay,
+  getDevList,
   getAlarms,
 } from '../lib/fusionsolar';
 import {
@@ -50,15 +58,23 @@ import {
   upsertFusionSolarKpiDay,
   upsertFusionSolarAlarms,
   syncResolvedAlarms,
+  updateFusionSolarLivePower,
+  getFusionSolarDeviceCache,
+  saveFusionSolarDeviceCache,
+  loadFusionSolarSession,
+  saveFusionSolarSession,
   logRefresh,
 } from '../lib/db';
-import type { StationKpiHourRecord } from '../lib/types';
+import type { StationKpiHourRecord, DeviceRealKpi } from '../lib/types';
 
 /** Max station codes per batched call — Huawei caps getStation* at 100. */
 const CHUNK = 100;
 
+/** Reuse a stored Huawei token while younger than this (tokens live ~30 min). */
+const TOKEN_MAX_AGE_MIN = 25;
+
 const modeArg = process.argv.indexOf('--mode');
-const MODE = (modeArg >= 0 ? process.argv[modeArg + 1] : 'live') as 'live' | 'rollup';
+const MODE = (modeArg >= 0 ? process.argv[modeArg + 1] : 'live') as 'live' | 'rollup' | 'power';
 
 const ALL_CODES = STATIONS.map(s => s.code);
 
@@ -78,6 +94,115 @@ async function fetchHourly(client: FusionSolarClient, date: Date): Promise<Stati
   return all;
 }
 
+// ── Shared Huawei session ────────────────────────────────────────────────────
+// FusionSolarClient keeps its xsrf token TypeScript-private; the client file is
+// reverse-engineered and must not be modified, so the worker reads/writes the
+// token through a cast (TS-private is compile-time only). apiPost already
+// captures rotated tokens from response headers into the same field.
+
+function getToken(client: FusionSolarClient): string | null {
+  return (client as unknown as { xsrfToken: string | null }).xsrfToken;
+}
+
+function setToken(client: FusionSolarClient, token: string): void {
+  (client as unknown as { xsrfToken: string | null }).xsrfToken = token;
+}
+
+/** Login and persist the new token for other runs/jobs to reuse. */
+async function freshLogin(client: FusionSolarClient): Promise<void> {
+  if (!await client.login()) throw new Error('FusionSolar login failed');
+  const t = getToken(client);
+  if (t) await saveFusionSolarSession(t).catch(() => {}); // persistence is best-effort
+  await client.sleep(CALL_DELAY * 2);
+}
+
+/** Adopt a stored session if it is fresh enough; otherwise login. */
+async function ensureSession(client: FusionSolarClient): Promise<'reused' | 'fresh'> {
+  const s = await loadFusionSolarSession().catch(() => null);
+  if (s && Date.now() - s.obtainedAt.getTime() < TOKEN_MAX_AGE_MIN * 60_000) {
+    setToken(client, s.token);
+    return 'reused';
+  }
+  await freshLogin(client);
+  return 'fresh';
+}
+
+// ── power mode ───────────────────────────────────────────────────────────────
+
+/** Device cache, self-healing: populated via getDevList when empty. */
+async function ensureDeviceCache(client: FusionSolarClient) {
+  let devs = await getFusionSolarDeviceCache();
+  if (devs.length) return devs;
+
+  console.log('  device cache empty — fetching device lists');
+  const fetched = [];
+  for (const s of STATIONS) {
+    fetched.push(...await getDevList(client, s.code));
+    await client.sleep(CALL_DELAY);
+  }
+  await saveFusionSolarDeviceCache(fetched);
+  devs = fetched.map(d => ({ dev_id: String(d.id), station_code: d.stationCode, dev_type_id: d.devTypeId }));
+  if (!devs.length) throw new Error('getDevList returned no devices for any station');
+  return devs;
+}
+
+async function runPower(client: FusionSolarClient) {
+  const reuse = await ensureSession(client);
+  console.log(`  session: ${reuse}`);
+
+  const devices = await ensureDeviceCache(client);
+  const inverters = devices.filter(d => d.dev_type_id === 1);
+  if (!inverters.length) throw new Error('Device cache holds no inverters (dev_type_id=1)');
+
+  // One batched real-time call per 100 inverters. Called via apiPost directly
+  // so the failCode is visible for the expired-session retry below.
+  const byStation = new Map<string, number>();
+  for (const group of chunk(inverters, 100)) {
+    const devIds = group.map(d => d.dev_id).join(',');
+    let res = await client.apiPost<Array<{ devId: number; dataItemMap: DeviceRealKpi }>>(
+      'getDevRealKpi', { devIds, devTypeId: 1 },
+    );
+
+    // 305/401 = session no longer valid (stored token outlived Huawei's side).
+    if (res.failCode === 305 || res.failCode === 401) {
+      console.log(`  stored session rejected (failCode=${res.failCode}) — logging in fresh`);
+      await freshLogin(client);
+      res = await client.apiPost<Array<{ devId: number; dataItemMap: DeviceRealKpi }>>(
+        'getDevRealKpi', { devIds, devTypeId: 1 },
+      );
+    }
+    if (res.failCode !== 0 && res.failCode !== undefined) {
+      throw new Error(`getDevRealKpi failCode=${res.failCode} ${res.message ?? ''}`);
+    }
+
+    const idToStation = new Map(group.map(d => [Number(d.dev_id), d.station_code]));
+    for (const e of res.data ?? []) {
+      const st = idToStation.get(e.devId);
+      if (!st) continue;
+      const p = e.dataItemMap?.active_power;
+      if (p != null && !Number.isNaN(Number(p))) {
+        byStation.set(st, (byStation.get(st) ?? 0) + Number(p));
+      }
+    }
+    await client.sleep(CALL_DELAY);
+  }
+
+  // Persist whatever token we hold now (apiPost may have rotated it).
+  const t = getToken(client);
+  if (t) await saveFusionSolarSession(t).catch(() => {});
+
+  // Stations with no responding inverter stay null — never invent a zero.
+  const items = ALL_CODES.map(code => ({
+    stationCode: code,
+    powerKw: byStation.has(code) ? Math.round(byStation.get(code)! * 1000) / 1000 : null,
+  }));
+  const r = await updateFusionSolarLivePower(items);
+
+  const filled = items.filter(i => i.powerKw != null).length;
+  console.log(`power — stations:${items.length} with-power:${filled} | inverters:${inverters.length}`);
+  return { ok: r.ok, errors: r.errors };
+}
+
 async function runLive(client: FusionSolarClient) {
   // 1. Station totals + health (one batched call per 100 stations)
   const kpiMap = new Map<string, { day_power?: number; month_power?: number; total_power?: number; real_health_state?: number }>();
@@ -87,22 +212,17 @@ async function runLive(client: FusionSolarClient) {
     await client.sleep(CALL_DELAY);
   }
 
-  // 2. Today's hourly curve — also gives us a current-power estimate
+  // 2. Today's hourly curve (energy per hour — the charts' canonical series).
+  //    NOTE: live PV power is NOT derived here any more — the 5-min power job
+  //    owns station_live.pv_power_kw (see runPower / updateFusionSolarLivePower).
   const today = new Date();
   const hourly = await fetchHourly(client, today);
 
-  // Latest non-null hourly inverterPower per station ≈ current kW
-  const latestPower = new Map<string, number>();
-  for (const r of hourly) {
-    if (r.inverterPower != null) latestPower.set(r.stationCode, r.inverterPower);
-  }
-
-  // 3. Write live snapshot
+  // 3. Write KPI snapshot (everything except pv_power_kw)
   const items = ALL_CODES.map(code => {
     const k = kpiMap.get(code) ?? {};
     return {
       stationCode: code,
-      pvPowerKw:   latestPower.get(code) ?? null,
       today:       k.day_power ?? null,
       month:       k.month_power ?? null,
       total:       k.total_power ?? null,
@@ -155,13 +275,27 @@ async function runRollup(client: FusionSolarClient) {
     dayRows += dayRecords.length;
   }
 
+  // Refresh the device cache so the power job survives inverter swaps.
+  // Non-fatal: a cache refresh failure must not sink the rollup itself.
+  try {
+    const fetched = [];
+    for (const s of STATIONS) {
+      await client.sleep(CALL_DELAY);
+      fetched.push(...await getDevList(client, s.code));
+    }
+    const saved = await saveFusionSolarDeviceCache(fetched);
+    console.log(`rollup — device cache refreshed: ${saved} devices`);
+  } catch (err) {
+    console.error('rollup — device cache refresh failed (non-fatal):', err instanceof Error ? err.message : String(err));
+  }
+
   console.log(`rollup — hourly written:${hourlyWritten} | kpi_day rows:${dayRows}`);
   return { ok: STATIONS.length, errors: 0 };
 }
 
 async function main() {
-  if (MODE !== 'live' && MODE !== 'rollup') {
-    throw new Error(`Unknown --mode "${MODE}" (expected "live" or "rollup")`);
+  if (MODE !== 'live' && MODE !== 'rollup' && MODE !== 'power') {
+    throw new Error(`Unknown --mode "${MODE}" (expected "power", "live" or "rollup")`);
   }
 
   console.log(`FusionSolar worker — mode=${MODE} — ${STATIONS.length} plants`);
@@ -171,11 +305,15 @@ async function main() {
     const { username, password, baseUrl } = loadFusionSolarEnv();
     const client = new FusionSolarClient(username, password, baseUrl);
 
-    const loginOk = await client.login();
-    if (!loginOk) throw new Error('FusionSolar login failed');
-    await client.sleep(CALL_DELAY * 2);
+    // power mode manages its own session (reuses the stored token when fresh);
+    // live/rollup login here and persist the token so power runs can adopt it.
+    if (MODE !== 'power') {
+      await freshLogin(client);
+    }
 
-    const r = MODE === 'live' ? await runLive(client) : await runRollup(client);
+    const r = MODE === 'power' ? await runPower(client)
+            : MODE === 'live'  ? await runLive(client)
+            :                    await runRollup(client);
 
     await logRefresh({
       source:        'fusionsolar',

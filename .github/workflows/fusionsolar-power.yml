@@ -1,0 +1,44 @@
+name: FusionSolar Live Power
+
+# True real-time inverter power for the whole FusionSolar fleet — one batched
+# getDevRealKpi call (Huawei refreshes it ~every 5 min). Writes ONLY
+# station_live.pv_power_kw; energy counters, curves and alarms belong to the
+# Live Snapshot + Rollup workflows. Device IDs come from the fusionsolar_devices
+# cache and the Huawei session token is shared via fusionsolar_session, so most
+# runs make exactly ONE Huawei API call and skip login.
+#
+# Scheduling is driven by Supabase pg_cron (workflow_dispatch) every 5 min
+# during 05:00–19:55 SAST. The window deliberately runs past sunset so the last
+# write of the day is a true ~0 kW — overnight the dashboard then shows an
+# honest zero, not a stale afternoon value. GitHub's own `schedule:` trigger is
+# intentionally NOT used (best-effort, fires late or skips).
+# See the Supabase cron job `gh-trigger-fusionsolar-power`.
+
+on:
+  workflow_dispatch: {}
+
+# Never overlap two power sweeps; a queued run replaces nothing — it just waits.
+concurrency:
+  group: fusionsolar-power
+  cancel-in-progress: false
+
+jobs:
+  power:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - name: Add Huawei host entry (GitHub DNS blocks *.huawei.com)
+        run: echo "119.8.160.213 intl.fusionsolar.huawei.com" | sudo tee -a /etc/hosts
+      - run: npm ci
+      - name: Fetch live power
+        env:
+          FUSIONSOLAR_USERNAME: ${{ secrets.FUSIONSOLAR_USERNAME }}
+          FUSIONSOLAR_PASSWORD: ${{ secrets.FUSIONSOLAR_PASSWORD }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: npx tsx scripts/fusionsolar-worker.ts --mode power
