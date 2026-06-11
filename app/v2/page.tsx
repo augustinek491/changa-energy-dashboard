@@ -1,3 +1,4 @@
+import type { Viewport } from 'next';
 import Link from 'next/link';
 import { ArrowRight } from 'lucide-react';
 import { BrandLogo } from '@/components/v2/brand-logo';
@@ -6,6 +7,9 @@ export const metadata = {
   title: 'Changa OneView — Fleet Console',
   description: 'One console for the entire Changa Energy solar fleet.',
 };
+
+// Match the mobile browser chrome to the dark login backdrop.
+export const viewport: Viewport = { themeColor: '#0f172a' };
 
 // No-auth entry shell. A single CTA opens the Command Centre.
 export default function OneViewLogin() {
