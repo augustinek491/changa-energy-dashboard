@@ -273,7 +273,7 @@ export async function getAllSites(client: LivoltkClient): Promise<SiteSummary[]>
   const resp = await client.postJson(
     '/powerstation/findAllByCustomer',
     { start: 1, pageSize: 100, name: '' },
-    { isUseChangeUnit: 'true' },
+    { isUseChangeUnit: 'false' }, // base units only — see getSiteLive note
   );
   return (resp.data as SiteSummary[]) ?? [];
 }
@@ -362,7 +362,10 @@ export async function getSiteLive(
 ): Promise<SiteLive> {
   const resp = await client.postForm('/powerstation/findOne', {
     id: siteId,
-    isUseChangeUnit: 'true',
+    // 'false' = stable base units (kWh/kW/kWp). 'true' auto-rescales month &
+    // lifetime to MWh and ships the unit in a separate field, which the
+    // ingestion ignores — storing values 1000x too small. See _shared/index.ts.
+    isUseChangeUnit: 'false',
   });
   return (resp.data ?? { id: siteId }) as SiteLive;
 }

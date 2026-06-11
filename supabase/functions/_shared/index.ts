@@ -1052,7 +1052,11 @@ export async function getAllSitesLive(
   siteIds: number[] = ALL_SITE_IDS,
 ): Promise<SiteLive[]> {
   const results = await Promise.allSettled(
-    siteIds.map(id => client.postForm('/powerstation/findOne', { id, isUseChangeUnit: 'true' }))
+    // isUseChangeUnit MUST be 'false': with 'true' the API auto-rescales month &
+    // lifetime to MWh (returning a separate *Unit field we don't read), so e.g.
+    // 1276 kWh comes back as "1.276" and gets stored 1000x too small. 'false'
+    // returns every value in stable base units (kWh / kW / kWp / kg).
+    siteIds.map(id => client.postForm('/powerstation/findOne', { id, isUseChangeUnit: 'false' }))
   );
   return results.map((result, i) => {
     if (result.status === 'fulfilled') return (result.value.data ?? { id: siteIds[i] }) as SiteLive;
