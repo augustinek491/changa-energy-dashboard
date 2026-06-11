@@ -54,7 +54,9 @@ function StationRow({ s }: { s: Station }) {
 }
 
 export function OemGroupSection({ group }: { group: OemGroup }) {
-  const [open, setOpen] = useState(true);
+  // Closed by default: the Command Centre loads with compact summary rows
+  // (name, site count, status dots, live kW); a click expands the cards.
+  const [open, setOpen] = useState(false);
   return (
     <div className="ov-card overflow-hidden">
       <button
