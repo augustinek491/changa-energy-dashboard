@@ -289,17 +289,23 @@ export async function buildOneViewReport(mode: Mode = 'email') {
   return { html, date: data.date, summary: summarise(data.stations), counts: alertCounts(data.alerts) };
 }
 
-export async function sendOneViewReport() {
+// `overrideTo` bypasses the report_recipients table for one-off test/demo sends —
+// the production recipient list is only consulted when no override is given.
+export async function sendOneViewReport(overrideTo?: { email: string; label?: string | null }[]) {
   if (!process.env.RESEND_API_KEY) throw new Error('RESEND_API_KEY is not configured');
 
-  const db = getDashboardClient();
-  const { data: recipients } = await db
-    .from('report_recipients')
-    .select('email, label')
-    .eq('active', true)
-    .order('created_at');
+  let recipients = overrideTo ?? null;
+  if (!recipients) {
+    const db = getDashboardClient();
+    const { data } = await db
+      .from('report_recipients')
+      .select('email, label')
+      .eq('active', true)
+      .order('created_at');
+    recipients = data ?? [];
+  }
 
-  if (!recipients?.length) throw new Error('No active recipients configured');
+  if (!recipients.length) throw new Error('No active recipients configured');
 
   const data = await buildData();
   const s = summarise(data.stations);

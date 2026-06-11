@@ -1,15 +1,16 @@
 'use client';
 
 // Changa OneView — Reports. The boardroom deliverable: a branded daily fleet
-// report that goes out by email every morning and exports to PDF on demand.
-// This page is the control surface — it previews exactly what the next report
-// will contain (live), opens the full report, exports the PDF, and manages who
-// receives the daily email. The report itself is always full-fleet.
+// report that goes out by email at close of day (19:30 SAST, once the solar
+// day is complete) and exports to PDF on demand. This page is the control
+// surface — it previews exactly what the next report will contain (live),
+// opens the full report, exports the PDF, manages who receives the daily
+// email, and can send a one-off test to any inbox for demos.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   FileText, Download, ExternalLink, Mail, Plus, Trash2, Clock,
-  Sun, Banknote, Bell, Activity, CheckCircle2, Loader2,
+  Sun, Banknote, Bell, Activity, CheckCircle2, Loader2, Send,
 } from 'lucide-react';
 import { OneViewHeader } from '@/components/v2/oneview-header';
 import { StatTile } from '@/components/v2/stat-tile';
@@ -107,10 +108,35 @@ export default function ReportsPage() {
     loadRecipients();
   }
 
+  const [testEmail, setTestEmail] = useState('');
+  const [sendingTest, setSendingTest] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  async function sendTest(e: React.FormEvent) {
+    e.preventDefault();
+    const to = testEmail.trim();
+    if (!to) return;
+    setSendingTest(true); setTestResult(null);
+    try {
+      const res = await fetch('/api/v2/reports', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ to }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) setTestResult({ ok: false, msg: data?.error ?? 'Send failed' });
+      else { setTestResult({ ok: true, msg: `Sent — check the inbox at ${to}` }); setTestEmail(''); }
+    } catch {
+      setTestResult({ ok: false, msg: 'Network error — try again' });
+    } finally {
+      setSendingTest(false);
+    }
+  }
+
   const openReport = () => window.open('/api/v2/reports?preview=1', '_blank', 'noopener');
   const downloadPdf = () => window.open('/api/v2/reports?pdf=1', '_blank', 'noopener');
 
-  const subtitle = `Daily fleet briefing · ${activeCount} recipient${activeCount === 1 ? '' : 's'} · auto-sends 07:00 SAST`;
+  const subtitle = `Daily fleet briefing · ${activeCount} recipient${activeCount === 1 ? '' : 's'} · auto-sends 19:30 SAST`;
 
   return (
     <>
@@ -134,10 +160,11 @@ export default function ReportsPage() {
                 <h2 className="text-lg font-bold" style={{ color: 'var(--text-primary)' }}>Daily Fleet Report</h2>
                 <p className="mt-1 text-sm leading-relaxed max-w-xl" style={{ color: 'var(--text-secondary)' }}>
                   One branded briefing across every OEM — fleet status, energy yield, the Rand value of that
-                  energy, and open alerts. Emailed each morning and exportable to PDF on demand.
+                  energy, and open alerts. Emailed at close of day with the full day&apos;s numbers, and
+                  exportable to PDF on demand.
                 </p>
                 <div className="mt-3 flex items-center gap-2 text-[11px] font-semibold" style={{ color: 'var(--text-muted)' }}>
-                  <Clock size={13} /> Auto-sends daily at 07:00 SAST
+                  <Clock size={13} /> Auto-sends daily at 19:30 SAST — after the solar day ends
                 </div>
               </div>
             </div>
@@ -159,6 +186,33 @@ export default function ReportsPage() {
               </button>
             </div>
           </div>
+
+          {/* Test send — demo the email without touching the recipient list */}
+          <form onSubmit={sendTest} className="mt-5 border-t pt-4" style={{ borderColor: 'var(--border)' }}>
+            <div className="flex flex-col sm:flex-row sm:items-center gap-2.5">
+              <p className="text-[11px] font-semibold sm:w-64 leading-relaxed" style={{ color: 'var(--text-muted)' }}>
+                Email a one-off test of today&apos;s report to any inbox — live data, recipient list untouched.
+              </p>
+              <input
+                type="email" required placeholder="name@example.com" value={testEmail}
+                onChange={e => setTestEmail(e.target.value)}
+                className="flex-1 text-sm px-3 py-2 rounded-lg outline-none"
+                style={{ background: 'var(--card-hover)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+              />
+              <button
+                type="submit" disabled={sendingTest || !testEmail.trim()}
+                className="inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-bold cursor-pointer transition-opacity disabled:opacity-50"
+                style={{ background: 'var(--accent)', color: '#fff' }}
+              >
+                {sendingTest ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />} Send test report
+              </button>
+            </div>
+            {testResult && (
+              <p className="mt-2 text-[11px] font-semibold" style={{ color: testResult.ok ? 'var(--accent)' : 'var(--status-offline)' }}>
+                {testResult.msg}
+              </p>
+            )}
+          </form>
         </div>
 
         {/* Live snapshot — what the next report will carry */}

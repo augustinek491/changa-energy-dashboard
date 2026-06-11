@@ -6,7 +6,7 @@
 // email digest of the same feed ships from /api/v2/alerts/digest.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, WifiOff, Activity, BatteryWarning, Radio, CheckCircle2, Bell, Mail } from 'lucide-react';
+import { AlertTriangle, WifiOff, Activity, BatteryWarning, Radio, CheckCircle2, Bell, Mail, Send, Loader2 } from 'lucide-react';
 import { OneViewHeader } from '@/components/v2/oneview-header';
 import { FilterBar } from '@/components/v2/filter-bar';
 import { useFleetFilter } from '@/components/v2/filter-context';
@@ -43,6 +43,31 @@ export default function AlertCentre() {
 
   const { filter } = useFleetFilter();
   const [sev, setSev] = useState<SevFilter>('all');
+
+  const [testEmail, setTestEmail] = useState('');
+  const [sendingKind, setSendingKind] = useState<'digest' | 'alarm' | null>(null);
+  const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  async function sendTest(kind: 'digest' | 'alarm') {
+    const to = testEmail.trim();
+    if (!to || sendingKind) return;
+    setSendingKind(kind); setTestResult(null);
+    try {
+      const res = await fetch('/api/v2/alerts/digest', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ to, kind }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) setTestResult({ ok: false, msg: d?.error ?? 'Send failed' });
+      else if (kind === 'alarm') setTestResult({ ok: true, msg: `Alarm sent${d.simulated ? ' (simulated — fleet was all clear)' : d.alert ? ` — ${d.alert}` : ''} · check ${to}` });
+      else setTestResult({ ok: true, msg: `Digest sent — check ${to}` });
+    } catch {
+      setTestResult({ ok: false, msg: 'Network error — try again' });
+    } finally {
+      setSendingKind(null);
+    }
+  }
 
   const fetchData = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true);
@@ -101,11 +126,53 @@ export default function AlertCentre() {
           <SummaryTile label="Sites affected" value={data ? counts.sites : null} color="var(--text-secondary)" icon={<Bell size={16} />} sub={`of ${stations.length} in view`} />
           <div className="ov-card flex flex-col justify-center p-5">
             <p className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.13em]" style={{ color: 'var(--text-secondary)' }}>
-              <Mail size={14} style={{ color: 'var(--accent)' }} /> Daily digest
+              <Mail size={14} style={{ color: 'var(--accent)' }} /> Email alerts
             </p>
-            <p className="mt-2 text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Emailed to your team</p>
-            <p className="mt-1 text-[11px]" style={{ color: 'var(--text-muted)' }}>This feed is delivered each morning by email.</p>
+            <p className="mt-2 text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Digest + alarm notifications</p>
+            <p className="mt-1 text-[11px]" style={{ color: 'var(--text-muted)' }}>Try both live — send a test below.</p>
           </div>
+        </div>
+
+        {/* Test sends — demo the emails without touching the recipient list */}
+        <div className="ov-card p-5">
+          <div className="flex flex-col lg:flex-row lg:items-center gap-4 justify-between">
+            <div className="min-w-0">
+              <p className="text-[11px] font-bold uppercase tracking-[0.13em]" style={{ color: 'var(--text-secondary)' }}>
+                Try the emails live
+              </p>
+              <p className="mt-1 text-xs leading-relaxed max-w-md" style={{ color: 'var(--text-muted)' }}>
+                Send this feed as a digest, or the alarm notification the team would get the moment a
+                site trips — to any inbox. The real recipient list is untouched.
+              </p>
+            </div>
+            <div className="flex flex-col sm:flex-row gap-2 shrink-0">
+              <input
+                type="email" placeholder="name@example.com" value={testEmail}
+                onChange={e => setTestEmail(e.target.value)}
+                className="sm:w-56 text-sm px-3 py-2 rounded-lg outline-none"
+                style={{ background: 'var(--card-hover)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+              />
+              <button
+                type="button" onClick={() => sendTest('digest')} disabled={!!sendingKind || !testEmail.trim()}
+                className="inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-bold cursor-pointer transition-opacity disabled:opacity-50"
+                style={{ background: 'var(--accent)', color: '#fff' }}
+              >
+                {sendingKind === 'digest' ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />} Send digest
+              </button>
+              <button
+                type="button" onClick={() => sendTest('alarm')} disabled={!!sendingKind || !testEmail.trim()}
+                className="inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-bold cursor-pointer transition-opacity disabled:opacity-50"
+                style={{ background: 'var(--status-offline)', color: '#fff' }}
+              >
+                {sendingKind === 'alarm' ? <Loader2 size={15} className="animate-spin" /> : <AlertTriangle size={15} />} Send test alarm
+              </button>
+            </div>
+          </div>
+          {testResult && (
+            <p className="mt-3 text-[11px] font-semibold" style={{ color: testResult.ok ? 'var(--accent)' : 'var(--status-offline)' }}>
+              {testResult.msg}
+            </p>
+          )}
         </div>
 
         {/* Severity filter */}
