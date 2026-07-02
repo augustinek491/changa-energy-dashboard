@@ -231,9 +231,12 @@ export async function getDevRealKpi(
 
 // ── Extended API functions ─────────────────────────────────────────────────────
 
-/** Convert unix ms timestamp to "YYYY-MM-DD" string */
+/** Convert unix ms timestamp to "YYYY-MM-DD" string.
+ *  Huawei stamps daily records at midnight PLANT-LOCAL time (SAST, UTC+2) —
+ *  e.g. plant-day 2 Jul = collectTime 2026-07-01T22:00:00Z. Apply the same +2h
+ *  correction getStationKpiMonth already uses, or every day labels one early. */
 function msToDate(ms: number): string {
-  return new Date(ms).toISOString().slice(0, 10);
+  return new Date(ms + 2 * 3_600_000).toISOString().slice(0, 10);
 }
 
 /** Normalize a field that may be a number, numeric string, or "N/A" */
