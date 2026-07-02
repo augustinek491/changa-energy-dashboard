@@ -1,40 +1,23 @@
 /**
  * cron-monthly — runs daily at midnight UTC
- * 1. FusionSolar monthly KPIs (getKpiStationMonth) → station_kpi_month
- * 2. LIVOLTEK monthly KPIs (derived from live data) → station_kpi_month
+ * LIVOLTEK monthly KPIs (derived from live data) → station_kpi_month
+ *
+ * FusionSolar monthly KPIs were REMOVED July 2026: Huawei IP-blocks Supabase
+ * (disguised 20400 "invalid credentials"), so the fetch failed every night.
+ * They now ride along with the GitHub Actions rollup job
+ * (scripts/fusionsolar-worker.ts --mode rollup), which runs 2×/day from the
+ * only unblocked IP range. Do NOT re-add FusionSolar calls here.
  */
 import {
-  STATIONS, CALL_DELAY, sleep,
-  FusionSolarClient, loadFusionSolarEnv, getStationKpiMonth,
   LivoltkClient, loadLivoltkEnv, getAllSitesLive,
-  upsertFusionSolarKpiMonth, upsertLivoltkKpiMonth, logRefresh,
+  upsertLivoltkKpiMonth, logRefresh,
 } from './_shared/index.ts';
 
 Deno.serve(async (_req: Request) => {
   const startedAt  = new Date();
   const yearMonth  = new Date().toISOString().slice(0, 7); // "YYYY-MM"
-  const codes      = STATIONS.map(s => s.code);
 
-  let fsResult = { ok: 0, errors: 0 };
   let lvResult = { ok: 0, errors: 0 };
-
-  // ── FusionSolar monthly KPIs ────────────────────────────────────────────────
-  try {
-    const { username, password, baseUrl } = loadFusionSolarEnv();
-    const client = new FusionSolarClient(username, password, baseUrl);
-    await client.login();
-    await sleep(CALL_DELAY * 2);
-
-    const records = await getStationKpiMonth(client, codes);
-    await upsertFusionSolarKpiMonth(records);
-    fsResult = { ok: records.length, errors: 0 };
-    await logRefresh({ source: 'fusionsolar', jobType: 'monthly', stationsOk: records.length, stationsError: 0, startedAt });
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    console.error('FusionSolar monthly job failed:', detail);
-    fsResult = { ok: 0, errors: STATIONS.length };
-    await logRefresh({ source: 'fusionsolar', jobType: 'monthly', stationsOk: 0, stationsError: STATIONS.length, errorDetail: detail, startedAt });
-  }
 
   // ── LIVOLTEK monthly KPIs (derived from live data) ──────────────────────────
   try {
@@ -56,7 +39,7 @@ Deno.serve(async (_req: Request) => {
     await logRefresh({ source: 'livoltek', jobType: 'monthly', stationsOk: 0, stationsError: 16, errorDetail: detail, startedAt });
   }
 
-  return new Response(JSON.stringify({ ok: true, fusionsolar: fsResult, livoltek: lvResult }), {
+  return new Response(JSON.stringify({ ok: true, livoltek: lvResult }), {
     headers: { 'Content-Type': 'application/json' },
   });
 });

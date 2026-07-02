@@ -1,0 +1,43 @@
+name: FusionSolar Backfill
+
+# One-off gap repair after an outage. Give it the exact calendar days to
+# re-fetch (hourly curve + daily totals, plus the monthly/yearly KPI refresh
+# that rides along with rollup mode). All writes are idempotent upserts, so
+# re-running a date is always safe.
+#
+# Manual only — dispatch from the Actions tab or:
+#   gh workflow run fusionsolar-backfill.yml -f dates=2026-06-29,2026-06-30
+
+on:
+  workflow_dispatch:
+    inputs:
+      dates:
+        description: "Comma-separated days to backfill (YYYY-MM-DD,...)"
+        required: true
+        type: string
+
+# Never overlap another FusionSolar job — Huawei's rate limit is account-level.
+concurrency:
+  group: fusionsolar-backfill
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - name: Add Huawei host entry (GitHub DNS blocks *.huawei.com)
+        run: echo "119.8.160.213 intl.fusionsolar.huawei.com" | sudo tee -a /etc/hosts
+      - run: npm ci
+      - name: Backfill requested days
+        env:
+          FUSIONSOLAR_USERNAME: ${{ secrets.FUSIONSOLAR_USERNAME }}
+          FUSIONSOLAR_PASSWORD: ${{ secrets.FUSIONSOLAR_PASSWORD }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: npx tsx scripts/fusionsolar-worker.ts --mode rollup --dates "${{ inputs.dates }}"

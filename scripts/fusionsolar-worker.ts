@@ -29,7 +29,12 @@
  *   --mode rollup  Self-healing backfill. Re-fetches the FULL hourly curve and
  *                  daily totals for today AND yesterday, so any gaps from missed
  *                  live runs are repaired and yesterday's final figure lands once
- *                  the day closes. Also refreshes the device cache. Runs 2x/day.
+ *                  the day closes. Also refreshes monthly + yearly KPIs (absorbed
+ *                  from the IP-blocked Supabase cron-monthly/cron-yearly edge
+ *                  functions) and the device cache. Runs 2x/day.
+ *                  Optional --dates YYYY-MM-DD[,YYYY-MM-DD...] overrides the
+ *                  [yesterday, today] window to backfill exact days after an
+ *                  outage (used by the fusionsolar-backfill workflow).
  *
  * Usage:
  *   npx tsx scripts/fusionsolar-worker.ts --mode power
@@ -49,6 +54,8 @@ import {
   getStationRealKpis,
   getStationKpiHour,
   getStationKpiDay,
+  getStationKpiMonth,
+  getStationKpiYear,
   getDevList,
   getAlarms,
 } from '../lib/fusionsolar';
@@ -56,6 +63,8 @@ import {
   upsertFusionSolarLiveKpi,
   upsertFusionSolarHourlyReadings,
   upsertFusionSolarKpiDay,
+  upsertFusionSolarKpiMonth,
+  upsertFusionSolarKpiYear,
   upsertFusionSolarAlarms,
   syncResolvedAlarms,
   updateFusionSolarLivePower,
@@ -76,6 +85,18 @@ const TOKEN_MAX_AGE_MIN = 25;
 
 const modeArg = process.argv.indexOf('--mode');
 const MODE = (modeArg >= 0 ? process.argv[modeArg + 1] : 'live') as 'live' | 'rollup' | 'power';
+
+// Optional --dates 2026-06-29,2026-06-30 (rollup mode only): backfill these
+// exact calendar days instead of the default [yesterday, today]. Used by the
+// fusionsolar-backfill workflow to repair gaps after an outage.
+const datesArg = process.argv.indexOf('--dates');
+const DATES: Date[] | null = datesArg >= 0
+  ? process.argv[datesArg + 1].split(',').map(s => {
+      const t = s.trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(t)) throw new Error(`--dates: bad date "${t}" (expected YYYY-MM-DD)`);
+      return new Date(t + 'T12:00:00Z'); // noon UTC — safely inside the day in any TZ
+    })
+  : null;
 
 const ALL_CODES = STATIONS.map(s => s.code);
 
@@ -111,7 +132,20 @@ function setToken(client: FusionSolarClient, token: string): void {
 
 /** Login and persist the new token for other runs/jobs to reuse. */
 async function freshLogin(client: FusionSolarClient): Promise<void> {
-  if (!await client.login()) throw new Error('FusionSolar login failed');
+  // client.login() prints "Login failed: failCode=<n>" immediately before
+  // returning false. Restate the likely meaning here so the diagnosis also
+  // lands in refresh_log.error_detail (what the dashboard staleness alert
+  // reads) instead of an opaque "login failed".
+  if (!await client.login()) {
+    throw new Error(
+      'FusionSolar login rejected by Huawei (see the "Login failed: failCode=..." ' +
+      'line logged just above for the exact code). Common causes — ' +
+      '20003: Northbound API account / third-party system EXPIRED → renew its ' +
+      'validity period in the FusionSolar Management System; ' +
+      '20002: third-party system disabled; 306: wrong password; ' +
+      '305: account locked (too many failed logins); 20400: IP blocked.',
+    );
+  }
   const t = getToken(client);
   if (t) await saveFusionSolarSession(t).catch(() => {}); // persistence is best-effort
   await client.sleep(CALL_DELAY * 2);
@@ -294,11 +328,13 @@ async function runLive(client: FusionSolarClient) {
 async function runRollup(client: FusionSolarClient) {
   const today = new Date();
   const yesterday = new Date(Date.now() - 86400000);
+  const days = DATES ?? [yesterday, today];
+  if (DATES) console.log(`  backfill dates: ${DATES.map(d => d.toISOString().slice(0, 10)).join(', ')}`);
 
   let hourlyWritten = 0;
   let dayRows = 0;
 
-  for (const date of [yesterday, today]) {
+  for (const date of days) {
     // Hourly curve (self-healing — re-fetches the whole day)
     const hourly = await fetchHourly(client, date);
     const hr = await upsertFusionSolarHourlyReadings(hourly);
@@ -312,6 +348,27 @@ async function runRollup(client: FusionSolarClient) {
     }
     await upsertFusionSolarKpiDay(dayRecords);
     dayRows += dayRecords.length;
+  }
+
+  // Monthly + yearly KPIs. Absorbed from the Supabase cron-monthly/cron-yearly
+  // edge functions, which can never reach Huawei (IP-blocked, disguised 20400) —
+  // GitHub runners are the only unblocked path. Rollup runs 2×/day, ample for
+  // month/year granularity. Logged as their own refresh_log entries so the
+  // monthly/yearly log streams continue uninterrupted. Non-fatal.
+  try {
+    const mStart = new Date();
+    await client.sleep(CALL_DELAY);
+    const months = await getStationKpiMonth(client, ALL_CODES);
+    await upsertFusionSolarKpiMonth(months);
+    await logRefresh({ source: 'fusionsolar', jobType: 'monthly', stationsOk: months.length, stationsError: 0, startedAt: mStart });
+    const yStart = new Date();
+    await client.sleep(CALL_DELAY);
+    const years = await getStationKpiYear(client, ALL_CODES);
+    await upsertFusionSolarKpiYear(years);
+    await logRefresh({ source: 'fusionsolar', jobType: 'yearly', stationsOk: years.length, stationsError: 0, startedAt: yStart });
+    console.log(`rollup — kpi_month rows:${months.length} | kpi_year rows:${years.length}`);
+  } catch (err) {
+    console.error('rollup — month/year KPI refresh failed (non-fatal):', err instanceof Error ? err.message : String(err));
   }
 
   // Refresh the device cache so the power job survives inverter swaps.
